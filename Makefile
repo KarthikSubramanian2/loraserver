@@ -15,26 +15,22 @@ clean:
 
 test: statics
 	@echo "Running tests"
+	@rm -f coverage.out
 	@for pkg in $(PKGS) ; do \
 		golint $$pkg ; \
 	done
 	@go vet $(PKGS)
-	@go test -p 1 -v $(PKGS)
-
-documentation:
-	@echo "Building documentation"
-	@mkdir -p dist/docs
-	@cd docs && hugo
-	@cd docs/public/ && tar -pczf ../../dist/loraserver-documentation.tar.gz .
+	@go test -p 1 -v -cover $(PKGS) -coverprofile coverage.out
 
 dist:
-	@goreleaser
+	goreleaser
+	mkdir -p dist/upload/tar
+	mkdir -p dist/upload/deb
+	mv dist/*.tar.gz dist/upload/tar
+	mv dist/*.deb dist/upload/deb
 
-build-snapshot:
+snapshot:
 	@goreleaser --snapshot
-
-package-deb:
-	@cd packaging && TARGET=deb ./package.sh
 
 api:
 	@echo "Generating API code from .proto files"
@@ -42,26 +38,24 @@ api:
 	go generate api/as/as.go
 	go generate api/nc/nc.go
 	go generate api/ns/ns.go
+	go generate api/geo/geo.go
 	go generate api/common/common.go
 	go generate internal/storage/device_session.go
 
 statics:
 	@echo "Generating static files"
-	@go generate cmd/loraserver/main.go
+	@go generate internal/migrations/migrations.go
 
-requirements:
-	@go get -u github.com/kisielk/errcheck
-	@go get -u github.com/golang/lint/golint
-	@go get -u github.com/smartystreets/goconvey
-	@go get -u golang.org/x/tools/cmd/stringer
-	@go get -u github.com/golang/protobuf/protoc-gen-go
-	@go get -u github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger
-	@go get -u github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway
-	@go get -u github.com/elazarl/go-bindata-assetfs/...
-	@go get -u github.com/jteeuwen/go-bindata/...
-	@go get -u github.com/golang/dep/cmd/dep
-	@go get -u github.com/goreleaser/goreleaser
-	@dep ensure -v
+dev-requirements:
+	go install golang.org/x/lint/golint
+	go install golang.org/x/tools/cmd/stringer
+	go install github.com/golang/protobuf/protoc-gen-go
+	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-swagger
+	go install github.com/grpc-ecosystem/grpc-gateway/protoc-gen-grpc-gateway
+	go install github.com/elazarl/go-bindata-assetfs/go-bindata-assetfs
+	go install github.com/jteeuwen/go-bindata/go-bindata
+	go install github.com/goreleaser/goreleaser
+	go install github.com/goreleaser/nfpm
 
 # shortcuts for development
 

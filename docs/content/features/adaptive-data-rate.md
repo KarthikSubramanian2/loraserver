@@ -3,7 +3,8 @@ title: Adaptive data-rate
 menu:
     main:
         parent: features
-        weight: 1
+        weight: 2
+description: Adaptive data-rate (ADR) reduces airtime and the device energy consumption.
 ---
 
 # Adaptive data-rate
@@ -26,4 +27,4 @@ adjust the data-rate and tx-power of the device if needed.
 
 To make sure there is enough link margin left after setting the ideal
 data-rate and tx-power, it is important to configure the installation margin
-correctly. See also [adaptive data-rate configuration]({{<ref "install/config.md">}}).
+correctly. See also [adaptive data-rate configuration]({{<ref "/install/config.md">}}).

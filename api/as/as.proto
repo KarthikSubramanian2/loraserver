@@ -3,7 +3,9 @@ syntax = "proto3";
 package as;
 
 import "google/protobuf/empty.proto";
-import "github.com/brocaar/loraserver/api/gw/gw.proto";
+import "api/common/common.proto";
+import "api/gw/gw.proto";
+
 
 // ApplicationServerService is the service providing the application-server interface.
 service ApplicationServerService {
@@ -21,6 +23,9 @@ service ApplicationServerService {
 
     // SetDeviceStatus updates the device-status for a device.
     rpc SetDeviceStatus(SetDeviceStatusRequest) returns (google.protobuf.Empty) {}
+
+    // SetDeviceLocation updates the device-location for a device.
+    rpc SetDeviceLocation(SetDeviceLocationRequest) returns (google.protobuf.Empty) {}
 }
 
 enum RXWindow {
@@ -35,6 +40,15 @@ enum ErrorType {
     DATA_UP_MIC = 3;
     DEVICE_QUEUE_ITEM_SIZE = 4;
     DEVICE_QUEUE_ITEM_FCNT = 5;
+}
+
+
+message DeviceActivationContext {
+    // Assigned Device Address.
+    bytes dev_addr = 1;
+
+    // Application session key (envelope).
+    common.KeyEnvelope app_s_key = 2;
 }
 
 
@@ -65,6 +79,12 @@ message HandleUplinkDataRequest {
 
     // Received data (encrypted).
     bytes data = 9;
+
+    // Device activation context.
+    // 
+    // This field is only set on the first uplink frame when the security
+    // context has changed (e.g. a new OTAA (re)activation).
+    DeviceActivationContext device_activation_context = 10;
 }
 
 message HandleProprietaryUplinkRequest {
@@ -110,15 +130,30 @@ message SetDeviceStatusRequest {
     // Device EUI (8 bytes).
     bytes dev_eui = 1;
 
-    // Battery level.
+    // Battery level (deprecated, use battery_level).
     // 0:      The end-device is connected to an external power source
     // 1..254: The battery level, 1 being at minimum and 254 being at maximum
     // 255:    The end-device was not able to measure the battery level
-    // 256:    The device-status is not available.
     uint32 battery = 2;
 
     // The device margin status
     // -32..32: The demodulation SNR ration in dB
-    // 256:     The device-status is not available.
     int32  margin = 3;
+
+    // Device is connected to an external power source.
+    bool external_power_source = 4;
+
+    // Device battery status is not available.
+    bool battery_level_unavailable = 5;
+
+    // Battery level as a percentage.
+    float battery_level = 6;
+}
+
+message SetDeviceLocationRequest {
+    // Device EUI (8 bytes).
+    bytes dev_eui = 1;
+
+    // The location of the device.
+    common.Location location = 2;
 }

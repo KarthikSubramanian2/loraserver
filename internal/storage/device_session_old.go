@@ -3,11 +3,10 @@ package storage
 import (
 	"time"
 
-	"github.com/brocaar/loraserver/internal/config"
-	"github.com/brocaar/loraserver/internal/models"
+	"github.com/brocaar/loraserver/internal/band"
 	"github.com/brocaar/lorawan"
-	"github.com/brocaar/lorawan/band"
-	uuid "github.com/satori/go.uuid"
+	loraband "github.com/brocaar/lorawan/band"
+	"github.com/gofrs/uuid"
 )
 
 // DeviceSessionOld defines the "old" device-session struct.
@@ -52,21 +51,16 @@ type DeviceSessionOld struct {
 	// by the node, or 0 when not set.
 	MaxSupportedTXPowerIndex int
 
-	// MaxSupportedDR defines the maximum supported DR index by the node,
-	// or 0 when not set.
-	MaxSupportedDR int
-
 	// NbTrans defines the number of transmissions for each unconfirmed uplink
 	// frame. In case of 0, the default value is used.
 	// This value is controlled by the ADR engine.
 	NbTrans uint8
 
-	EnabledChannels       []int                // deprecated, migrated by GetDeviceSession
-	EnabledUplinkChannels []int                // channels that are activated on the node
-	ExtraUplinkChannels   map[int]band.Channel // extra uplink channels, configured by the user
-	ChannelFrequencies    []int                // frequency of each channel
-	UplinkHistory         []UplinkHistory      // contains the last 20 transmissions
-	LastRXInfoSet         models.RXInfoSet     // sorted set (best at index 0)
+	EnabledChannels       []int                    // deprecated, migrated by GetDeviceSession
+	EnabledUplinkChannels []int                    // channels that are activated on the node
+	ExtraUplinkChannels   map[int]loraband.Channel // extra uplink channels, configured by the user
+	ChannelFrequencies    []int                    // frequency of each channel
+	UplinkHistory         []UplinkHistory          // contains the last 20 transmissions
 
 	// LastDevStatusRequest contains the timestamp when the last device-status
 	// request was made.
@@ -116,11 +110,10 @@ func migrateDeviceSessionOld(d DeviceSessionOld) DeviceSession {
 		RX2DR:        d.RX2DR,
 		RX2Frequency: d.RX2Frequency,
 
-		TXPowerIndex: d.TXPowerIndex,
-		DR:           d.DR,
-		ADR:          d.ADR,
+		TXPowerIndex:             d.TXPowerIndex,
+		DR:                       d.DR,
+		ADR:                      d.ADR,
 		MaxSupportedTXPowerIndex: d.MaxSupportedTXPowerIndex,
-		MaxSupportedDR:           d.MaxSupportedDR,
 		NbTrans:                  d.NbTrans,
 		EnabledChannels:          d.EnabledChannels,
 		EnabledUplinkChannels:    d.EnabledUplinkChannels,
@@ -133,22 +126,20 @@ func migrateDeviceSessionOld(d DeviceSessionOld) DeviceSession {
 		PingSlotNb:               d.PingSlotNb,
 		PingSlotDR:               d.PingSlotDR,
 		PingSlotFrequency:        d.PingSlotFrequency,
+
+		UplinkGatewayHistory: make(map[lorawan.EUI64]UplinkGatewayHistory),
 	}
 
 	if len(out.EnabledUplinkChannels) == 0 {
 		out.EnabledUplinkChannels = out.EnabledChannels
 	}
 
-	for _, rx := range d.LastRXInfoSet {
-		out.UplinkGatewayHistory[rx.MAC] = UplinkGatewayHistory{}
-	}
-
 	if out.ExtraUplinkChannels == nil {
-		out.ExtraUplinkChannels = make(map[int]band.Channel)
+		out.ExtraUplinkChannels = make(map[int]loraband.Channel)
 	}
 
 	if out.RX2Frequency == 0 {
-		out.RX2Frequency = config.C.NetworkServer.Band.Band.GetDefaults().RX2Frequency
+		out.RX2Frequency = band.Band().GetDefaults().RX2Frequency
 	}
 
 	return out

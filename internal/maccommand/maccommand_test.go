@@ -4,8 +4,6 @@ import (
 	"fmt"
 	"testing"
 
-	"github.com/brocaar/loraserver/internal/common"
-	"github.com/brocaar/loraserver/internal/config"
 	"github.com/brocaar/loraserver/internal/models"
 	"github.com/brocaar/loraserver/internal/storage"
 	"github.com/brocaar/loraserver/internal/test"
@@ -14,113 +12,22 @@ import (
 	. "github.com/smartystreets/goconvey/convey"
 )
 
-func TestHandleUplink(t *testing.T) {
-	conf := test.GetConfig()
-
-	Convey("Given a clean Redis database", t, func() {
-		config.C.Redis.Pool = common.NewRedisPool(conf.RedisURL)
-		test.MustFlushRedis(config.C.Redis.Pool)
-
-		Convey("Given a device-session", func() {
-			ds := storage.DeviceSession{
-				DevEUI:                [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
-				EnabledUplinkChannels: []int{0, 1},
-			}
-			So(storage.SaveDeviceSession(config.C.Redis.Pool, ds), ShouldBeNil)
-
-			Convey("Test LinkCheckReq", func() {
-				dr2, err := config.C.NetworkServer.Band.Band.GetDataRate(2)
-				So(err, ShouldBeNil)
-
-				block := storage.MACCommandBlock{
-					CID: lorawan.LinkCheckReq,
-					MACCommands: storage.MACCommands{
-						lorawan.MACCommand{
-							CID: lorawan.LinkCheckReq,
-						},
-					},
-				}
-
-				rxPacket := models.RXPacket{
-					TXInfo: models.TXInfo{
-						DataRate: dr2,
-					},
-					RXInfoSet: models.RXInfoSet{
-						{
-							LoRaSNR: 5,
-						},
-					},
-				}
-
-				resp, err := Handle(&ds, storage.DeviceProfile{}, storage.ServiceProfile{}, nil, block, nil, rxPacket)
-				So(err, ShouldBeNil)
-
-				Convey("Then the expected response was returned", func() {
-					So(resp, ShouldHaveLength, 1)
-					So(resp[0], ShouldResemble, storage.MACCommandBlock{
-						CID: lorawan.LinkCheckAns,
-						MACCommands: storage.MACCommands{
-							{
-								CID: lorawan.LinkCheckAns,
-								Payload: &lorawan.LinkCheckAnsPayload{
-									GwCnt:  1,
-									Margin: 20, // 5 - -15 (see SpreadFactorToRequiredSNRTable)
-								},
-							},
-						},
-					})
-				})
-			})
-
-			Convey("Test PingSlotInfoReq", func() {
-				block := storage.MACCommandBlock{
-					CID: lorawan.PingSlotInfoReq,
-					MACCommands: []lorawan.MACCommand{
-						{
-							CID: lorawan.PingSlotInfoReq,
-							Payload: &lorawan.PingSlotInfoReqPayload{
-								Periodicity: 3,
-							},
-						},
-					},
-				}
-
-				resp, err := Handle(&ds, storage.DeviceProfile{}, storage.ServiceProfile{}, nil, block, nil, models.RXPacket{})
-				So(err, ShouldBeNil)
-
-				Convey("Then the ClassB PingNb has been set", func() {
-					So(ds.PingSlotNb, ShouldEqual, 16)
-				})
-
-				Convey("Then the expected response was returned", func() {
-					So(resp, ShouldHaveLength, 1)
-					So(resp[0], ShouldResemble, storage.MACCommandBlock{
-						CID: lorawan.PingSlotInfoAns,
-						MACCommands: []lorawan.MACCommand{
-							{
-								CID: lorawan.PingSlotInfoAns,
-							},
-						},
-					})
-				})
-			})
-		})
-	})
-}
-
 func TestHandleDownlink(t *testing.T) {
 	conf := test.GetConfig()
 
 	Convey("Given a clean Redis database", t, func() {
-		config.C.Redis.Pool = common.NewRedisPool(conf.RedisURL)
-		test.MustFlushRedis(config.C.Redis.Pool)
+		if err := storage.Setup(conf); err != nil {
+			t.Fatal(err)
+		}
+
+		test.MustFlushRedis(storage.RedisPool())
 
 		Convey("Given a device-session", func() {
 			ds := storage.DeviceSession{
 				DevEUI:                [8]byte{1, 2, 3, 4, 5, 6, 7, 8},
 				EnabledUplinkChannels: []int{0, 1},
 			}
-			So(storage.SaveDeviceSession(config.C.Redis.Pool, ds), ShouldBeNil)
+			So(storage.SaveDeviceSession(storage.RedisPool(), ds), ShouldBeNil)
 
 			Convey("Testing LinkADRAns", func() {
 				testTable := []struct {
@@ -154,29 +61,6 @@ func TestHandleDownlink(t *testing.T) {
 							TXPowerIndex:          3,
 							NbTrans:               2,
 							DR:                    5,
-						},
-					},
-					{
-						Name: "pending request and negative DR ack decrements the max allowed data-rate",
-						DeviceSession: storage.DeviceSession{
-							EnabledUplinkChannels: []int{0, 1},
-						},
-						LinkADRReqPayload: &lorawan.LinkADRReqPayload{
-							ChMask:   lorawan.ChMask{true, true, true},
-							DataRate: 5,
-							TXPower:  3,
-							Redundancy: lorawan.Redundancy{
-								NbRep: 2,
-							},
-						},
-						LinkADRAnsPayload: lorawan.LinkADRAnsPayload{
-							ChannelMaskACK: true,
-							DataRateACK:    false,
-							PowerACK:       true,
-						},
-						ExpectedDeviceSession: storage.DeviceSession{
-							EnabledUplinkChannels: []int{0, 1},
-							MaxSupportedDR:        4,
 						},
 					},
 					{

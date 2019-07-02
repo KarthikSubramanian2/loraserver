@@ -3,14 +3,7 @@ package config
 import (
 	"time"
 
-	"github.com/garyburd/redigo/redis"
-
 	"github.com/brocaar/loraserver/api/nc"
-	"github.com/brocaar/loraserver/internal/api/client/asclient"
-	"github.com/brocaar/loraserver/internal/api/client/jsclient"
-	"github.com/brocaar/loraserver/internal/backend"
-	"github.com/brocaar/loraserver/internal/backend/gateway"
-	"github.com/brocaar/loraserver/internal/common"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/band"
 )
@@ -27,12 +20,13 @@ type Config struct {
 	PostgreSQL struct {
 		DSN         string `mapstructure:"dsn"`
 		Automigrate bool
-		DB          *common.DBLogger
 	} `mapstructure:"postgresql"`
 
 	Redis struct {
-		URL  string `mapstructure:"url"`
-		Pool *redis.Pool
+		URL         string        `mapstructure:"url"`
+		MaxIdle     int           `mapstructure:"max_idle"`
+		MaxActive   int           `mapstructure:"max_active"`
+		IdleTimeout time.Duration `mapstructure:"idle_timeout"`
 	}
 
 	NetworkServer struct {
@@ -43,24 +37,22 @@ type Config struct {
 		GetDownlinkDataDelay time.Duration `mapstructure:"get_downlink_data_delay"`
 
 		Band struct {
-			Band               band.Band
 			Name               band.Name
 			DwellTime400ms     bool `mapstructure:"dwell_time_400ms"`
 			RepeaterCompatible bool `mapstructure:"repeater_compatible"`
 		}
 
 		NetworkSettings struct {
-			InstallationMargin          float64 `mapstructure:"installation_margin"`
-			RX1Delay                    int     `mapstructure:"rx1_delay"`
-			RX1DROffset                 int     `mapstructure:"rx1_dr_offset"`
-			RX2DR                       int     `mapstructure:"rx2_dr"`
-			RX2Frequency                int     `mapstructure:"rx2_frequency"`
-			DownlinkTXPower             int     `mapstructure:"downlink_tx_power"`
-			EnabledUplinkChannels       []int   `mapstructure:"enabled_uplink_channels"`
-			DisableMACCommands          bool    `mapstructure:"disable_mac_commands"`
-			EnabledUplinkChannelsLegacy string  `mapstructure:"enabled_uplink_channels_legacy"`
-			ExtraChannelsLegacy         []int   `mapstructure:"extra_channels_legacy"`
-			DisableADR                  bool    `mapstructure:"disable_adr"`
+			InstallationMargin    float64 `mapstructure:"installation_margin"`
+			RXWindow              int     `mapstructure:"rx_window"`
+			RX1Delay              int     `mapstructure:"rx1_delay"`
+			RX1DROffset           int     `mapstructure:"rx1_dr_offset"`
+			RX2DR                 int     `mapstructure:"rx2_dr"`
+			RX2Frequency          int     `mapstructure:"rx2_frequency"`
+			DownlinkTXPower       int     `mapstructure:"downlink_tx_power"`
+			EnabledUplinkChannels []int   `mapstructure:"enabled_uplink_channels"`
+			DisableMACCommands    bool    `mapstructure:"disable_mac_commands"`
+			DisableADR            bool    `mapstructure:"disable_adr"`
 
 			ExtraChannels []struct {
 				Frequency int
@@ -80,6 +72,14 @@ type Config struct {
 			} `mapstructure:"rejoin_request"`
 		} `mapstructure:"network_settings"`
 
+		Scheduler struct {
+			SchedulerInterval time.Duration `mapstructure:"scheduler_interval"`
+
+			ClassC struct {
+				DownlinkLockDuration time.Duration `mapstructure:"downlink_lock_duration"`
+			} `mapstructure:"class_c"`
+		} `mapstructure:"scheduler"`
+
 		API struct {
 			Bind    string
 			CACert  string `mapstructure:"ca_cert"`
@@ -88,22 +88,62 @@ type Config struct {
 		} `mapstructure:"api"`
 
 		Gateway struct {
+			// Deprecated
 			Stats struct {
-				TimezoneLocation     *time.Location
-				CreateGatewayOnStats bool `mapstructure:"create_gateway_on_stats"`
-				Timezone             string
-				AggregationIntervals []string `mapstructure:"aggregation_intervals"`
+				Timezone string
 			}
 
 			Backend struct {
-				Backend backend.Gateway
-				MQTT    gateway.MQTTBackendConfig
+				Type string `mapstructure:"type"`
+
+				MQTT struct {
+					Server       string
+					Username     string
+					Password     string
+					QOS          uint8  `mapstructure:"qos"`
+					CleanSession bool   `mapstructure:"clean_session"`
+					ClientID     string `mapstructure:"client_id"`
+					CACert       string `mapstructure:"ca_cert"`
+					TLSCert      string `mapstructure:"tls_cert"`
+					TLSKey       string `mapstructure:"tls_key"`
+
+					EventTopic           string `mapstructure:"event_topic"`
+					CommandTopicTemplate string `mapstructure:"command_topic_template"`
+				} `mapstructure:"mqtt"`
+
+				GCPPubSub struct {
+					CredentialsFile         string        `mapstructure:"credentials_file"`
+					ProjectID               string        `mapstructure:"project_id"`
+					UplinkTopicName         string        `mapstructure:"uplink_topic_name"`
+					DownlinkTopicName       string        `mapstructure:"downlink_topic_name"`
+					UplinkRetentionDuration time.Duration `mapstructure:"uplink_retention_duration"`
+				} `mapstructure:"gcp_pub_sub"`
+
+				AzureIoTHub struct {
+					EventsConnectionString   string `mapstructure:"events_connection_string"`
+					CommandsConnectionString string `mapstructure:"commands_connection_string"`
+				} `mapstructure:"azure_iot_hub"`
 			}
 		}
 	} `mapstructure:"network_server"`
 
+	GeolocationServer struct {
+		Server  string `mapstructure:"server"`
+		CACert  string `mapstructure:"ca_cert"`
+		TLSCert string `mapstructure:"tls_cert"`
+		TLSKey  string `mapstructure:"tls_key"`
+	} `mapstructure:"geolocation_server"`
+
 	JoinServer struct {
-		Pool jsclient.Pool
+		ResolveJoinEUI      bool   `mapstructure:"resolve_join_eui"`
+		ResolveDomainSuffix string `mapstructure:"resolve_domain_suffix"`
+
+		Certificates []struct {
+			JoinEUI string `mapstructure:"join_eui"`
+			CaCert  string `mapstructure:"ca_cert"`
+			TLSCert string `mapstructure:"tls_cert"`
+			TLSKey  string `mapstructure:"tls_key"`
+		} `mapstructure:"certificates"`
 
 		Default struct {
 			Server  string
@@ -111,11 +151,14 @@ type Config struct {
 			TLSCert string `mapstructure:"tls_cert"`
 			TLSKey  string `mapstructure:"tls_key"`
 		}
-	} `mapstructure:"join_server"`
 
-	ApplicationServer struct {
-		Pool asclient.Pool
-	}
+		KEK struct {
+			Set []struct {
+				Label string
+				KEK   string `mapstructure:"kek"`
+			}
+		} `mapstructure:"kek"`
+	} `mapstructure:"join_server"`
 
 	NetworkController struct {
 		Client nc.NetworkControllerServiceClient
@@ -125,6 +168,17 @@ type Config struct {
 		TLSCert string `mapstructure:"tls_cert"`
 		TLSKey  string `mapstructure:"tls_key"`
 	} `mapstructure:"network_controller"`
+
+	Metrics struct {
+		Timezone string `mapstructure:"timezone"`
+		Redis    struct {
+			AggregationIntervals []string      `mapstructure:"aggregation_intervals"`
+			MinuteAggregationTTL time.Duration `mapstructure:"minute_aggregation_ttl"`
+			HourAggregationTTL   time.Duration `mapstructure:"hour_aggregation_ttl"`
+			DayAggregationTTL    time.Duration `mapstructure:"day_aggregation_ttl"`
+			MonthAggregationTTL  time.Duration `mapstructure:"month_aggregation_ttl"`
+		} `mapstructure:"redis"`
+	} `mapstructure:"metrics"`
 }
 
 // SpreadFactorToRequiredSNRTable contains the required SNR to demodulate a
@@ -143,13 +197,10 @@ var SpreadFactorToRequiredSNRTable = map[int]float64{
 // C holds the global configuration.
 var C Config
 
-// ClassCScheduleInterval it the interval in which the Class-C scheduler
-// must run.
-var ClassCScheduleInterval = time.Second
+// ClassBEnqueueMargin contains the margin duration when scheduling Class-B
+// messages.
+var ClassBEnqueueMargin = time.Second * 5
 
-// ClassCScheduleBatchSize contains the batch size of the Class-C scheduler
-var ClassCScheduleBatchSize = 100
-
-// ClassCDownlinkLockDuration contains the duration to lock the downlink
-// Class-C transmissions after a preceeding downlink tx.
-var ClassCDownlinkLockDuration = time.Second * 2
+// MulticastClassCInterval defines the interval between the gateway scheduling
+// for Class-C multicast.
+var MulticastClassCInterval = time.Second

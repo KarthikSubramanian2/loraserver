@@ -70,6 +70,21 @@ automigrate={{ .PostgreSQL.Automigrate }}
 # https://www.iana.org/assignments/uri-schemes/prov/redis
 url="{{ .Redis.URL }}"
 
+# Max idle connections in the pool.
+max_idle={{ .Redis.MaxIdle }}
+
+# Idle timeout.
+#
+# Close connections after remaining idle for this duration. If the value
+# is zero, then idle connections are not closed. You should set
+# the timeout to a value less than the server's timeout.
+idle_timeout="{{ .Redis.IdleTimeout }}"
+
+# Max active connections in the pool.
+#
+# When zero, there is no limit on the number of connections in the pool.
+max_active={{ .Redis.MaxActive }}
+
 
 # Network-server settings.
 [network_server]
@@ -154,6 +169,14 @@ get_downlink_data_delay="{{ .NetworkServer.GetDownlinkDataDelay }}"
   # surrounded gateways.
   installation_margin={{ .NetworkServer.NetworkSettings.InstallationMargin }}
 
+  # RX window (Class-A).
+  #
+  # Set this to:
+  # 0: RX1, fallback to RX2 (on RX1 scheduling error)
+  # 1: RX1 only
+  # 2: RX2 only
+  rx_window={{ .NetworkServer.NetworkSettings.RXWindow }}
+
   # Class A RX1 delay
   #
   # 0=1sec, 1=1sec, ... 15=15sec. A higher value means LoRa Server has more
@@ -196,8 +219,10 @@ get_downlink_data_delay="{{ .NetworkServer.GetDownlinkDataDelay }}"
 
   # Disable mac-commands
   #
-  # When set, uplink mac-commands are ignored and the network-server will not
-  # send mac-commands to the devices. This is intended for testing only.
+  # When set to true, LoRa Server will not handle and / or schedule any
+  # mac-commands. However, it is still possible for an external controller
+  # to handle and / or schedule mac-commands. This is intended for testing
+  # only.
   disable_mac_commands={{ .NetworkServer.NetworkSettings.DisableMACCommands }}
 
   # Disable ADR
@@ -209,6 +234,7 @@ get_downlink_data_delay="{{ .NetworkServer.GetDownlinkDataDelay }}"
   #
   # Use this when ony a sub-set of the by default enabled channels are being
   # used. For example when only using the first 8 channels of the US band.
+  # Note: when left blank, all channels will be enabled.
   # 
   # Example:
   # enabled_uplink_channels=[0, 1, 2, 3, 4, 5, 6, 7]
@@ -288,6 +314,26 @@ get_downlink_data_delay="{{ .NetworkServer.GetDownlinkDataDelay }}"
   max_time_n={{ .NetworkServer.NetworkSettings.RejoinRequest.MaxTimeN }}
 
 
+  # Scheduler settings
+  #
+  # These settings affect the multicast, Class-B and Class-C downlink queue
+  # scheduler.
+  [network_server.scheduler]
+  # Scheduler interval
+  #
+  # The interval in which the downlink scheduler for multicast, Class-B and
+  # Class-C runs.
+  scheduler_interval="{{ .NetworkServer.Scheduler.SchedulerInterval }}"
+
+    # Class-C settings.
+    [network_server.scheduler.class_c]
+    # Downlink lock duration
+    #
+    # Contains the duration to lock the downlink Class-C transmissions
+    # after a preceeding downlink tx (per device).
+    downlink_lock_duration="{{ .NetworkServer.Scheduler.ClassC.DownlinkLockDuration }}"
+
+
   # Network-server API
   #
   # This is the network-server API that is used by LoRa App Server or other
@@ -306,128 +352,285 @@ get_downlink_data_delay="{{ .NetworkServer.GetDownlinkDataDelay }}"
   tls_key="{{ .NetworkServer.API.TLSKey }}"
 
 
-  # Gateway statistics settings.
-  [network_server.gateway.stats]
-  # Create non-existing gateways on receiving of stats
+  # Backend defines the gateway backend settings.
   #
-  # When set to true, LoRa Server will create the gateway when it receives
-  # statistics for a gateway that does not yet exist.
-  create_gateway_on_stats={{ .NetworkServer.Gateway.Stats.CreateGatewayOnStats }}
+  # The gateway backend handles the communication with the gateway(s) part of
+  # the LoRaWAN network.
+  [network_server.gateway.backend]
+    # Backend
+    #
+    # This defines the backend to use for the communication with the gateways.
+    # Use the section name of one of the following gateway backends.
+	# Valid options are:
+    #  * mqtt
+    #  * gcp_pub_sub
+    #  * azure_iot_hub
+    type="{{ .NetworkServer.Gateway.Backend.Type }}"
 
-  # Aggregation timezone
+
+    # MQTT gateway backend settings.
+    #
+    # This is the backend communicating with the LoRa gateways over a MQTT broker.
+    [network_server.gateway.backend.mqtt]
+    # MQTT topic templates for the different MQTT topics.
+    #
+    # The meaning of these topics are documented at:
+    # https://www.loraserver.io/lora-gateway-bridge/
+    #
+    # The default values match the default expected configuration of the
+    # LoRa Gateway Bridge MQTT backend. Therefore only change these values when
+    # absolutely needed.
+
+    # Event topic template.
+    event_topic="{{ .NetworkServer.Gateway.Backend.MQTT.EventTopic }}"
+
+    # Command topic template.
+    #
+    # Use:
+    #   * "{{ "{{ .GatewayID }}" }}" as an substitution for the LoRa gateway ID
+    #   * "{{ "{{ .CommandType }}" }}" as an substitution for the command type
+    command_topic_template="{{ .NetworkServer.Gateway.Backend.MQTT.CommandTopicTemplate }}"
+
+    # MQTT server (e.g. scheme://host:port where scheme is tcp, ssl or ws)
+    server="{{ .NetworkServer.Gateway.Backend.MQTT.Server }}"
+
+    # Connect with the given username (optional)
+    username="{{ .NetworkServer.Gateway.Backend.MQTT.Username }}"
+
+    # Connect with the given password (optional)
+    password="{{ .NetworkServer.Gateway.Backend.MQTT.Password }}"
+
+    # Quality of service level
+    #
+    # 0: at most once
+    # 1: at least once
+    # 2: exactly once
+    #
+    # Note: an increase of this value will decrease the performance.
+    # For more information: https://www.hivemq.com/blog/mqtt-essentials-part-6-mqtt-quality-of-service-levels
+    qos={{ .NetworkServer.Gateway.Backend.MQTT.QOS }}
+
+    # Clean session
+    #
+    # Set the "clean session" flag in the connect message when this client
+    # connects to an MQTT broker. By setting this flag you are indicating
+    # that no messages saved by the broker for this client should be delivered.
+    clean_session={{ .NetworkServer.Gateway.Backend.MQTT.CleanSession }}
+
+    # Client ID
+    #
+    # Set the client id to be used by this client when connecting to the MQTT
+    # broker. A client id must be no longer than 23 characters. When left blank,
+    # a random id will be generated. This requires clean_session=true.
+    client_id="{{ .NetworkServer.Gateway.Backend.MQTT.ClientID }}"
+
+    # CA certificate file (optional)
+    #
+    # Use this when setting up a secure connection (when server uses ssl://...)
+    # but the certificate used by the server is not trusted by any CA certificate
+    # on the server (e.g. when self generated).
+    ca_cert="{{ .NetworkServer.Gateway.Backend.MQTT.CACert }}"
+
+    # TLS certificate file (optional)
+    tls_cert="{{ .NetworkServer.Gateway.Backend.MQTT.TLSCert }}"
+
+    # TLS key file (optional)
+    tls_key="{{ .NetworkServer.Gateway.Backend.MQTT.TLSKey }}"
+
+
+    # Google Cloud Pub/Sub backend.
+    #
+    # Use this backend when the LoRa Gateway Bridge is configured to connect
+    # to the Google Cloud IoT Core MQTT broker (which integrates with Pub/Sub).
+    [network_server.gateway.backend.gcp_pub_sub]
+    # Path to the IAM service-account credentials file.
+    #
+    # Note: this service-account must have the following Pub/Sub roles:
+    #  * Pub/Sub Editor
+    credentials_file="{{ .NetworkServer.Gateway.Backend.GCPPubSub.CredentialsFile }}"
+
+    # Google Cloud project id.
+    project_id="{{ .NetworkServer.Gateway.Backend.GCPPubSub.ProjectID }}"
+
+    # Uplink Pub/Sub topic name (to which Cloud IoT Core publishes).
+    uplink_topic_name="{{ .NetworkServer.Gateway.Backend.GCPPubSub.UplinkTopicName }}"
+
+    # Downlink Pub/Sub topic name (for publishing downlink frames).
+    downlink_topic_name="{{ .NetworkServer.Gateway.Backend.GCPPubSub.DownlinkTopicName }}"
+
+    # Uplink retention duration.
+    #
+    # The retention duration that LoRa Server will set on the uplink subscription.
+    uplink_retention_duration="{{ .NetworkServer.Gateway.Backend.GCPPubSub.UplinkRetentionDuration }}"
+
+
+    # Azure IoT Hub backend.
+    #
+    # Use this backend when the LoRa Gateway Bridge is configured to connect
+    # to the Azure IoT Hub MQTT broker.
+    [network_server.gateway.backend.azure_iot_hub]
+
+    # Events connection string.
+    #
+    # This connection string must point to the Service Bus Queue to which the
+    # IoT Hub is forwarding the (uplink) gateway events.
+    events_connection_string="{{ .NetworkServer.Gateway.Backend.AzureIoTHub.EventsConnectionString }}"
+
+    # Commands connection string.
+    #
+    # This connection string must point to the IoT Hub and is used by LoRa Server
+    # for sending commands to the gateways.
+    commands_connection_string="{{ .NetworkServer.Gateway.Backend.AzureIoTHub.CommandsConnectionString }}"
+
+
+  # Geolocation settings.
   #
-  # This timezone is used for correctly aggregating the statistics (for example
-  # 'Europe/Amsterdam').
-  # To get the list of supported timezones by your PostgreSQL database,
-  # execute the following SQL query:
-  #   select * from pg_timezone_names;
-  # When left blank, the default timezone of your database will be used.
-  timezone="{{ .NetworkServer.Gateway.Stats.Timezone }}"
-
-  # Aggregation intervals to use for aggregating the gateway stats
+  # When set, LoRa Server will use the configured geolocation server to
+  # resolve the location of the devices.
+  [geolocation_server]
+  # Server.
   #
-  # Valid options: second, minute, hour, day, week, month, quarter, year.
-  # When left empty, no statistics will be stored in the database.
-  # Note, LoRa App Server expects at least "minute", "day", "hour"!
-  aggregation_intervals=[{{ if .NetworkServer.Gateway.Stats.AggregationIntervals|len }}"{{ end }}{{ range $index, $element := .NetworkServer.Gateway.Stats.AggregationIntervals }}{{ if $index }}", "{{ end }}{{ $element }}{{ end }}{{ if .NetworkServer.Gateway.Stats.AggregationIntervals|len }}"{{ end }}]
+  # The hostname:ip of the geolocation service (optional).
+  server="{{ .GeolocationServer.Server }}"
+
+  # CA certificate used by the API client (optional).
+  ca_cert="{{ .GeolocationServer.CACert}}"
+
+  # TLS certificate used by the API client (optional).
+  tls_cert="{{ .GeolocationServer.TLSCert }}"
+
+  # TLS key used by the API client (optional).
+  tls_key="{{ .GeolocationServer.TLSKey }}"
 
 
-  # MQTT gateway backend settings.
-  #
-  # This is the backend communicating with the LoRa gateways over a MQTT broker.
-  [network_server.gateway.backend.mqtt]
-  # MQTT topic templates for the different MQTT topics.
-  #
-  # The meaning of these topics are documented at:
-  # https://docs.loraserver.io/lora-gateway-bridge/use/data/
-  #
-  # The default values match the default expected configuration of the
-  # LoRa Gateway Bridge MQTT backend. Therefore only change these values when
-  # absolutely needed.
-  # Use "{{ "{{ .MAC }}" }}" as an substitution for the LoRa gateway MAC. 
-  uplink_topic_template="{{ .NetworkServer.Gateway.Backend.MQTT.UplinkTopicTemplate }}"
-  downlink_topic_template="{{ .NetworkServer.Gateway.Backend.MQTT.DownlinkTopicTemplate }}"
-  stats_topic_template="{{ .NetworkServer.Gateway.Backend.MQTT.StatsTopicTemplate }}"
-  ack_topic_template="{{ .NetworkServer.Gateway.Backend.MQTT.AckTopicTemplate }}"
-  config_topic_template="{{ .NetworkServer.Gateway.Backend.MQTT.ConfigTopicTemplate }}"
-
-  # MQTT server (e.g. scheme://host:port where scheme is tcp, ssl or ws)
-  server="{{ .NetworkServer.Gateway.Backend.MQTT.Server }}"
-
-  # Connect with the given username (optional)
-  username="{{ .NetworkServer.Gateway.Backend.MQTT.Username }}"
-
-  # Connect with the given password (optional)
-  password="{{ .NetworkServer.Gateway.Backend.MQTT.Password }}"
-
-  # Quality of service level
-  #
-  # 0: at most once
-  # 1: at least once
-  # 2: exactly once
-  #
-  # Note: an increase of this value will decrease the performance.
-  # For more information: https://www.hivemq.com/blog/mqtt-essentials-part-6-mqtt-quality-of-service-levels
-  qos={{ .NetworkServer.Gateway.Backend.MQTT.QOS }}
-
-  # Clean session
-  #
-  # Set the "clean session" flag in the connect message when this client
-  # connects to an MQTT broker. By setting this flag you are indicating
-  # that no messages saved by the broker for this client should be delivered.
-  clean_session={{ .NetworkServer.Gateway.Backend.MQTT.CleanSession }}
-
-  # Client ID
-  #
-  # Set the client id to be used by this client when connecting to the MQTT
-  # broker. A client id must be no longer than 23 characters. When left blank,
-  # a random id will be generated. This requires clean_session=true.
-  client_id="{{ .NetworkServer.Gateway.Backend.MQTT.ClientID }}"
-
-  # CA certificate file (optional)
-  #
-  # Use this when setting up a secure connection (when server uses ssl://...)
-  # but the certificate used by the server is not trusted by any CA certificate
-  # on the server (e.g. when self generated).
-  ca_cert="{{ .NetworkServer.Gateway.Backend.MQTT.CACert }}"
-
-  # TLS certificate file (optional)
-  tls_cert="{{ .NetworkServer.Gateway.Backend.MQTT.TLSCert }}"
-
-  # TLS key file (optional)
-  tls_key="{{ .NetworkServer.Gateway.Backend.MQTT.TLSKey }}"
-
-
-# Default join-server settings.
-[join_server.default]
-# hostname:port of the default join-server
+# Metrics collection settings.
+[metrics]
+# Timezone
 #
-# This API is provided by LoRa App Server.
-server="{{ .JoinServer.Default.Server }}"
+# The timezone is used for correctly aggregating the metrics (e.g. per hour,
+# day or month).
+# Example: "Europe/Amsterdam" or "Local" for the the system's local time zone.
+timezone="{{ .Metrics.Timezone }}"
 
-# ca certificate used by the default join-server client (optional)
-ca_cert="{{ .JoinServer.Default.CACert }}"
+  # Metrics stored in Redis.
+  #
+  # The following metrics are stored in Redis:
+  # * gateway statistics
+  [metrics.redis]
+  # Aggregation intervals
+  #
+  # The intervals on which to aggregate. Available options are:
+  # 'MINUTE', 'HOUR', 'DAY', 'MONTH'.
+  aggregation_intervals=[{{ if .Metrics.Redis.AggregationIntervals|len }}"{{ end }}{{ range $index, $elm := .Metrics.Redis.AggregationIntervals }}{{ if $index }}", "{{ end }}{{ $elm }}{{ end }}{{ if .Metrics.Redis.AggregationIntervals|len }}"{{ end }}]
 
-# tls certificate used by the default join-server client (optional)
-tls_cert="{{ .JoinServer.Default.TLSCert }}"
+  # Aggregated statistics storage duration.
+  minute_aggregation_ttl="{{ .Metrics.Redis.MinuteAggregationTTL }}"
+  hour_aggregation_ttl="{{ .Metrics.Redis.HourAggregationTTL }}"
+  day_aggregation_ttl="{{ .Metrics.Redis.DayAggregationTTL }}"
+  month_aggregation_ttl="{{ .Metrics.Redis.MonthAggregationTTL }}"
 
-# tls key used by the default join-server client (optional)
-tls_key="{{ .JoinServer.Default.TLSKey }}"
+
+# Join-server settings.
+[join_server]
+# Resolve JoinEUI (experimental).
+# Default join-server settings.
+#
+# When set to true, LoRa Server will use the JoinEUI to resolve the join-server
+# for the given JoinEUI. LoRa Server will fallback on the default join-server
+# when resolving the JoinEUI fails.
+resolve_join_eui={{ .JoinServer.ResolveJoinEUI }}
+
+# Resolve domain suffix.
+#
+# This configures the domain suffix used for resolving the join-server.
+resolve_domain_suffix="{{ .JoinServer.ResolveDomainSuffix }}"
 
 
-# Network-controller configuration.
-[network_controller]
-# hostname:port of the network-controller api server (optional)
-server="{{ .NetworkController.Server }}"
+  # Join-server certificates.
+  #
+  # Example:
+  # [[join_server.certificates]]
+  # # JoinEUI.
+  # #
+  # # The JoinEUI of the joinserver to to use the certificates for.
+  # join_eui="0102030405060708"
 
-# ca certificate used by the network-controller client (optional)
-ca_cert="{{ .NetworkController.CACert }}"
+  # # CA certificate (optional).
+  # #
+  # # Set this to validate the join-server server certificate (e.g. when the
+  # # certificate was self-signed).
+  # ca_cert="/path/to/ca.pem"
 
-# tls certificate used by the network-controller client (optional)
-tls_cert="{{ .NetworkController.TLSCert }}"
+  # # TLS client-certificate (optional).
+  # #
+  # # Set this to enable client-certificate authentication with the join-server.
+  # tls_cert="/path/to/tls_cert.pem"
 
-# tls key used by the network-controller client (optional)
-tls_key="{{ .NetworkController.TLSKey }}"
+  # # TLS client-certificate key (optional).
+  # #
+  # # Set this to enable client-certificate authentication with the join-server.
+  # tls_key="/path/to/tls_key.pem"
+  {{ range $index, $element := .JoinServer.Certificates }}
+  [[join_server.certificates]]
+  join_eui="{{ $element.JoinEUI }}"
+  ca_cert="{{ $element.CACert }}"
+  tls_cert="{{ $element.TLSCert }}"
+  tls_key="{{ $element.TLSKey }}"
+  {{ end }}
+
+  # Default join-server settings.
+  #
+  # This join-server will be used when resolving the JoinEUI is set to false
+  # or as a fallback when resolving the JoinEUI fails.
+  [join_server.default]
+  # hostname:port of the default join-server
+  #
+  # This API is provided by LoRa App Server.
+  server="{{ .JoinServer.Default.Server }}"
+
+  # ca certificate used by the default join-server client (optional)
+  ca_cert="{{ .JoinServer.Default.CACert }}"
+
+  # tls certificate used by the default join-server client (optional)
+  tls_cert="{{ .JoinServer.Default.TLSCert }}"
+
+  # tls key used by the default join-server client (optional)
+  tls_key="{{ .JoinServer.Default.TLSKey }}"
+
+
+  # Join-server KEK set.
+  #
+  # These KEKs (Key Encryption Keys) are used to decrypt the network related
+  # session-keys received from the join-server on a (re)join-accept.
+  # Please refer to the LoRaWAN Backend Interface specification
+  # 'Key Transport Security' section for more information.
+  #
+  # Example (the [[join_server.kek.set]] can be repeated):
+  # [[join_server.kek.set]]
+  # # KEK label.
+  # label="000000"
+
+  # # Key Encryption Key.
+  # kek="01020304050607080102030405060708"
+  {{ range $index, $element := .JoinServer.KEK.Set }}
+  [[join_server.kek.set]]
+  label="{{ $element.Label }}"
+  kek="{{ $element.KEK }}"
+  {{ end }}
+
+  # Network-controller configuration.
+  [network_controller]
+  # hostname:port of the network-controller api server (optional)
+  server="{{ .NetworkController.Server }}"
+
+  # ca certificate used by the network-controller client (optional)
+  ca_cert="{{ .NetworkController.CACert }}"
+
+  # tls certificate used by the network-controller client (optional)
+  tls_cert="{{ .NetworkController.TLSCert }}"
+
+  # tls key used by the network-controller client (optional)
+  tls_key="{{ .NetworkController.TLSKey }}"
 `
 
 var configCmd = &cobra.Command{

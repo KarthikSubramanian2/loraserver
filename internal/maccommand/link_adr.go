@@ -3,7 +3,7 @@ package maccommand
 import (
 	"fmt"
 
-	"github.com/brocaar/loraserver/internal/config"
+	"github.com/brocaar/loraserver/internal/band"
 	"github.com/brocaar/loraserver/internal/storage"
 	"github.com/brocaar/lorawan"
 	"github.com/pkg/errors"
@@ -51,7 +51,7 @@ func handleLinkADRAns(ds *storage.DeviceSession, block storage.MACCommandBlock, 
 	adrReq := linkADRPayloads[len(linkADRPayloads)-1]
 
 	if channelMaskACK && dataRateACK && powerACK {
-		chans, err := config.C.NetworkServer.Band.Band.GetEnabledUplinkChannelIndicesForLinkADRReqPayloads(ds.EnabledUplinkChannels, linkADRPayloads)
+		chans, err := band.Band().GetEnabledUplinkChannelIndicesForLinkADRReqPayloads(ds.EnabledUplinkChannels, linkADRPayloads)
 		if err != nil {
 			return nil, errors.Wrap(err, "get enalbed channels for link_adr_req payloads error")
 		}
@@ -89,14 +89,6 @@ func handleLinkADRAns(ds *storage.DeviceSession, block storage.MACCommandBlock, 
 		// be lowered by 1 at the next nACK.
 		if !powerACK && adrReq.TXPower > 0 {
 			ds.MaxSupportedTXPowerIndex = int(adrReq.TXPower) - 1
-		}
-
-		// It is possible that the node does not support all data-rates.
-		// In this case we set the MaxSupportedDR to the requested - 1.
-		// If that DR is not supported, it will be lowered by 1 at the
-		// next nACK.
-		if !dataRateACK && adrReq.DataRate > 0 {
-			ds.MaxSupportedDR = int(adrReq.DataRate) - 1
 		}
 
 		log.WithFields(log.Fields{

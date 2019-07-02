@@ -4,10 +4,352 @@ menu:
     main:
         parent: overview
         weight: 3
+toc: false
+description: Lists the changes per LoRa Server release, including steps how to upgrade.
 ---
 # Changelog
 
-## v2.0.0 (in development)
+## v3.0.2
+
+### Improvements
+
+* Make max idle / max active Redis connections configurable.
+
+### Bugfixes
+
+* Fix Azure IoT Hub detached link issue / recover on AMQP error.
+* Fix load device-session twice from database. [#406](https://github.com/brocaar/loraserver/pull/406).
+
+## v3.0.1
+
+### Bugfixes
+
+* Fix ADR setup. [#396](https://github.com/brocaar/loraserver/pull/396)
+
+## v3.0.0
+
+### Features
+
+### Improvements
+
+#### Legacy code removed
+
+Legacy code related to older gateway structures have been removed. All gateway
+messages are now based on the [Protobuf](https://github.com/brocaar/loraserver/blob/master/api/gw/gw.proto)
+messages.
+
+#### MQTT topic refactor
+
+Previously, each topic was configured separatly. To be consistent with
+LoRa Gateway Bridge v3, this has been re-factored into "events" and "commands".
+
+#### Azure integration
+
+The Azure integration (Cloud to Device) has been improved.
+
+#### RXTimingSetupAns acknowledged
+
+When LoRa Server receives a `RXTimingSetupAns` mac-command, it will always
+respond to the device, even when this results in sending an empty frame.
+
+### Upgrading
+
+LoRa Server v3 depends on LoRa Gateway Bridge v3! It is recommended to upgrade to
+the latest LoRa Server v2 release (which is forwards compatible with the
+LoRa Gateway Bridge v3), upgrade all LoRa Gateway Bridge installations to v3
+and then upgrade LoRa Server to v3.
+
+It is also recommended to update your LoRa Server configuration file.
+See [Configuration](https://www.loraserver.io/loraserver/install/config/) for
+more information.
+
+## v2.8.2
+
+### Bugfixes
+
+* Fix ADR setup. [#396](https://github.com/brocaar/loraserver/pull/396)
+
+## v2.8.1
+
+### Improvement
+
+#### Validate DevAddr on enqueue
+
+A `DevAddr` field has been added to the `MulticastQueueItem` API field.
+When this field is set, LoRa Server will validate that the current active
+security-context has the same `DevAddr` and if not, the API returns an error.
+
+This prevents enqueue calls after the device (re)joins but before the new
+`AppSKey` has been signalled to LoRa App Server.
+
+## v2.8.0
+
+### Features
+
+#### Add `mqtt2to3` sub-command
+
+This sub-command translates MQTT messages from the old topics to the new
+topics (gw > ns) and backwards (ns > gw) and should help when migrating from
+v2 to v3 MQTT topics (see below).
+
+This sub-command can be started as (when using the [Debian / Ubuntu](https://www.loraserver.io/loraserver/install/debian/) package):
+
+* `/etc/init.d/loraserver-mqtt2to3 start`
+* `systemctl start loraserver-mqtt2to3`
+
+From the CLI, this can be started as:
+
+* `loraserver mqtt2to3`
+
+As soon as all LoRa Gateway Bridge instances are upgraded to v3, this is no
+longer needed.
+
+#### Azure integration
+
+Using the Azure integration, it is possible to connect gateways using the
+[Azure IoT Hub](https://azure.microsoft.com/en-us/services/iot-hub/) service.
+This feature is still experimental and might (slightly) change.
+
+### Upgrading
+
+As a preparation to upgrade to LoRa Server v3, it is recommended to update the
+MQTT topic configuration to:
+
+```
+uplink_topic_template="gateway/+/event/up"
+stats_topic_template="gateway/+/event/stats"
+ack_topic_template="gateway/+/event/ack"
+downlink_topic_template="gateway/{{ .MAC }}/command/down"
+config_topic_template="gateway/{{ .MAC }}/command/config"
+```
+
+Together with the `mqtt2to3` sub-command (see above), this stays compatible
+with LoRa Gateway Bridge v2, but also provides compatibility with LoRa Gateway Bridge v3.
+Once LoRa Server v3 is released, it is recommended to first upgrade all LoRa
+Gateway Bridge instances to v3 and then upgrade LoRa Server to v3.
+
+
+## v2.7.0
+
+### Improvements
+
+#### Gateway downlink timing API
+
+In order to implement support for the [Basic Station](https://doc.sm.tc/station/)
+some small additions were made to the [gateway API](https://github.com/brocaar/loraserver/blob/master/api/gw/gw.proto),
+the API used in the communication between the [LoRa Gateway Bridge](https://www.loraserver.io/lora-gateway-bridge/)
+and LoRa Server.
+
+LoRa Server v2.7+ is compatible with both the LoRa Gateway Bridge v2 and
+(upcoming) v3 as it contains both the old and new fields. The old fields will
+be removed once LoRa Server v3 has been released.
+
+#### Max. ADR setting
+
+* Remove max. DR field from device-session and always use max. DR from service-profile.
+
+## v2.6.1
+
+### Bugfixes
+
+* Fix `CFList` with channel-mask for LoRaWAN 1.0.3 devices.
+* Fix triggering uplink configuration function (fixing de-duplication). [#387](https://github.com/brocaar/loraserver/issues/387)
+
+## v2.6.0
+
+### Features
+
+* On ADR, decrease device DR when the device is using a higher DR than the maximum DR set in the service-profile. [#375](https://github.com/brocaar/loraserver/issues/375)
+
+### Bugfixes
+
+* Implement missing `DeviceModeReq` mac-command for LoRaWAN 1.1. [#371](https://github.com/brocaar/loraserver/issues/371)
+* Fix triggering gateway config update. [#373](https://github.com/brocaar/loraserver/issues/373)
+
+### Improvements
+
+* Internal code-cleanup with regards to passing configuration and objects.
+* Internal migration from Dep to [Go modules](https://github.com/golang/go/wiki/Modules).
+
+## v2.6.0-test1
+
+### Features
+
+* On ADR, decrease device DR when the device is using a higher DR than the maximum DR set in the service-profile. [#375](https://github.com/brocaar/loraserver/issues/375)
+
+### Bugfixes
+
+* Implement missing `DeviceModeReq` mac-command for LoRaWAN 1.1. [#371](https://github.com/brocaar/loraserver/issues/371)
+* Fix triggering gateway config update. [#373](https://github.com/brocaar/loraserver/issues/373)
+
+### Improvements
+
+* Internal code-cleanup with regards to passing configuration and objects.
+* Internal migration from Dep to [Go modules](https://github.com/golang/go/wiki/Modules).
+
+## v2.5.0
+
+### Features
+
+* Environment variable based [configuration](https://www.loraserver.io/loraserver/install/config/) has been re-implemented.
+
+### Improvements
+
+* When mac-commands are disabled, an external controller can still receive all mac-commands and is able to schedule mac-commands.
+* When no accurate timestamp is available, the server time will be used as `DeviceTimeAns` timestamp.
+
+### Bugfixes
+
+* Fix potential deadlock on MQTT re-connect ([#103](https://github.com/brocaar/lora-gateway-bridge/issues/103))
+* Fix crash on (not yet) support rejoin-request type 1 ([#367](https://github.com/brocaar/loraserver/issues/367))
+
+## v2.4.1
+
+### Bugfixes
+
+* Fix typo in `month_aggregation_ttl` default value.
+
+## v2.4.0
+
+### Upgrade notes
+
+This update will migrate the gateway statistics to Redis, using the default
+`*_aggregation_ttl` settings. In case you would like to use different durations,
+please update your configuration before upgrading.
+
+### Improvements
+
+#### Gateway statistics
+
+Gateway statistics are now stored in Redis. This makes the storage of statistics
+more lightweight and also allows for automatic expiration of statistics. Please refer
+to the `[metrics.redis]` configuration section and the `*_aggregation_ttl` configuration
+options.
+
+#### Join-server DNS resolver (A record)
+
+When enabled (`resolve_join_eui`), LoRa Server will try to resolve the join-server
+using DNS. Note that currently only the A record has been implemented and that it
+is assumed that the join-server uses TLS. **Experimental.**
+
+#### FPort > 224
+
+LoRa Server no longer returns an error when a `fPort` greater than `224` is used.
+
+### Bugfixes
+
+* Fix init.d logrotate processing. ([#364](https://github.com/brocaar/loraserver/pull/364))
+
+## v2.3.1
+
+### Bugfixes
+
+* Fix polarization inversion regression for "Proprietary" LoRa frames.
+
+## v2.3.0
+
+### Features
+
+#### Google Cloud Platform integration
+
+LoRa Server is now able to integrate with [Cloud Pub/Sub](https://cloud.google.com/pubsub/)
+for gateway communication (as an alternative to MQTT). Together with the latest
+[LoRa Gateway Bridge](https://www.loraserver.io/lora-gateway-bridge/) version (v2.6.0),
+this makes it possible to let LoRa gateways connect with the
+[Cloud IoT Core](https://cloud.google.com/iot-core/)
+service and let LoRa Server communicate with Cloud IoT Core using Cloud Pub/Sub. 
+
+#### RX window selection
+
+It is now possible to select which RX window to use for downlink. The default
+option is RX1, falling back on RX2 in case of a scheduling error. Refer to
+[Configuration](https://www.loraserver.io/loraserver/install/config/)
+documentation for more information.
+
+### Improvements
+
+#### Battery status
+
+LoRa Server now sends the battery-level as a percentage to the application-server.
+The `battery` field (`0...255`) will be removed in the next major release.
+
+#### Downlink scheduler configuration
+
+The downlink scheduler parameters are now configurable. Refer to
+[Configuration](https://www.loraserver.io/loraserver/install/config/)
+documentation for more information. [#355](https://github.com/brocaar/loraserver/pull/355).
+
+## v2.2.0
+
+### Features
+
+#### Geolocation
+
+This adds support for geolocation through an external geolocation-server,
+for example [LoRa Geo Server](https://www.loraserver.io/lora-geo-server/overview/).
+See [Configuration](https://www.loraserver.io/loraserver/install/config/) for
+configuration options.
+
+#### Fine-timestamp decryption
+
+This adds support for configuring the fine-timestamp decryption key per
+gateway (board).
+
+### Bugfixes
+
+* Ignore unknown JSON fields when using the `json` marshaler.
+* Fix TX-power override for Class-B and Class-C. ([#352](https://github.com/brocaar/loraserver/issues/352))
+
+## v2.1.0
+
+### Features
+
+#### Multicast support
+
+This adds experimental support for creating multicast-groups to which devices
+can be assigned (potentially covered by multiple gateways).
+
+#### Updated data-format between LoRa Server and LoRa Gateway Bridge
+
+Note that this is a backwards compatible change as LoRa Server is able to
+automatically detect the used serizalization format based on the data sent by
+the LoRa Gateway Bridge.
+
+##### Protocol Buffer data serialization
+
+This adds support for the [Protocol Buffers](https://developers.google.com/protocol-buffers/)
+data serialization introduced by LoRa Gateway Bridge v2.5.0 to save on
+bandwidth between the LoRa Gateway Bridge and the MQTT.
+
+##### New JSON format
+
+The new JSON structure re-uses the messages defined for
+[Protocol Buffers](https://developers.google.com/protocol-buffers/docs/proto3#json)
+based serialization.
+
+### Improvements
+
+* Make Redis pool size and idle timeout configurable.
+
+### Bugfixes
+
+* Fix panic on empty routing-profile CA cert ([#349](https://github.com/brocaar/loraserver/issues/349))
+
+## v2.0.2
+
+### Bugfixes
+
+* Fix flush device- and service-profile cache on clean database. ([#345](https://github.com/brocaar/loraserver/issues/345))
+
+## v2.0.1
+
+### Bugfixes
+
+* Use `gofrs/uuid` UUID library as `satori/go.uuid` is not truly random. ([#342](https://github.com/brocaar/loraserver/pull/342))
+* Flush device- and service-profile cache when migrating from v1 to v2. ([lora-app-server#254](https://github.com/brocaar/lora-app-server/issues/254))
+* Set `board` and `antenna` on downlink. ([#341](https://github.com/brocaar/loraserver/pull/341))
+
+## v2.0.0
 
 ### Upgrade nodes
 
@@ -18,6 +360,10 @@ first :-)
 ### Features
 
 * LoRaWAN 1.1 support!
+* Support for signaling received (encrypted) AppSKey from join-server to
+  application-server on security context change.
+* Support for Key Encryption Keys, used for handling encrypted keys from the
+  join-server.
 
 ### Changes
 

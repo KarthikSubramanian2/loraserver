@@ -6,6 +6,7 @@ import (
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
+	"github.com/brocaar/loraserver/internal/band"
 	"github.com/brocaar/loraserver/internal/config"
 	"github.com/brocaar/loraserver/internal/storage"
 	"github.com/brocaar/lorawan"
@@ -18,16 +19,27 @@ var pktLossRateTable = [][3]uint8{
 	{3, 3, 3},
 }
 
+// disableADR disables the ADR engine when set to true.
+var disableADR bool
+
+// installationMargin defines the ADR installation-margin.
+var installationMargin float64
+
+// Setup configures the adr engine.
+func Setup(c config.Config) error {
+	disableADR = c.NetworkServer.NetworkSettings.DisableADR
+	installationMargin = c.NetworkServer.NetworkSettings.InstallationMargin
+
+	return nil
+}
+
 // HandleADR handles ADR in case requested by the node and configured
 // in the device-session.
-func HandleADR(ds storage.DeviceSession, linkADRReqBlock *storage.MACCommandBlock) ([]storage.MACCommandBlock, error) {
+func HandleADR(sp storage.ServiceProfile, ds storage.DeviceSession, linkADRReqBlock *storage.MACCommandBlock) ([]storage.MACCommandBlock, error) {
 
 	// if the node has ADR disabled or it's disabled gloablly
-	if !ds.ADR || config.C.NetworkServer.NetworkSettings.DisableADR {
-		if linkADRReqBlock == nil {
-			return nil, nil
-		}
-		return []storage.MACCommandBlock{*linkADRReqBlock}, nil
+	if !ds.ADR || disableADR {
+		return nil, nil
 	}
 
 	// get the max SNR from the UplinkHistory
@@ -43,15 +55,7 @@ func HandleADR(ds storage.DeviceSession, linkADRReqBlock *storage.MACCommandBloc
 		}
 	}
 
-	if ds.DR > getMaxAllowedDR() {
-		log.WithFields(log.Fields{
-			"dr":      ds.DR,
-			"dev_eui": ds.DevEUI,
-		}).Infof("ADR is only supported up to DR%d", getMaxAllowedDR())
-		return nil, nil
-	}
-
-	dr, err := config.C.NetworkServer.Band.Band.GetDataRate(ds.DR)
+	dr, err := band.Band().GetDataRate(ds.DR)
 	if err != nil {
 		return nil, errors.Wrap(err, "get data-rate error")
 	}
@@ -61,7 +65,7 @@ func HandleADR(ds storage.DeviceSession, linkADRReqBlock *storage.MACCommandBloc
 		return nil, err
 	}
 
-	snrMargin := snrM - requiredSNR - config.C.NetworkServer.NetworkSettings.InstallationMargin
+	snrMargin := snrM - requiredSNR - installationMargin
 	nStep := int(snrMargin / 3)
 
 	// In case of negative steps the ADR algorithm will increase the TXPower
@@ -71,10 +75,18 @@ func HandleADR(ds storage.DeviceSession, linkADRReqBlock *storage.MACCommandBloc
 		return nil, nil
 	}
 
-	maxSupportedDR := getMaxSupportedDRForNode(ds)
-	maxSupportedTXPowerOffsetIndex := getMaxSupportedTXPowerOffsetIndexForNode(ds)
+	maxSupportedDR := sp.DRMax
+	maxSupportedTXPowerOffsetIndex := getMaxSupportedTXPowerOffsetIndexForDevice(ds)
 
-	idealTXPowerIndex, idealDR := getIdealTXPowerOffsetAndDR(nStep, ds.TXPowerIndex, ds.DR, ds.MinSupportedTXPowerIndex, maxSupportedTXPowerOffsetIndex, maxSupportedDR)
+	var idealTXPowerIndex, idealDR int
+
+	if ds.DR > maxSupportedDR {
+		idealDR = maxSupportedDR
+		idealTXPowerIndex = ds.TXPowerIndex
+	} else {
+		idealTXPowerIndex, idealDR = getIdealTXPowerOffsetAndDR(nStep, ds.TXPowerIndex, ds.DR, ds.MinSupportedTXPowerIndex, maxSupportedTXPowerOffsetIndex, maxSupportedDR)
+	}
+
 	idealNbRep := getNbRep(ds.NbTrans, ds.GetPacketLossPercentage())
 
 	// there is nothing to adjust
@@ -165,7 +177,7 @@ func getNbRep(currentNbRep uint8, pktLossRate float64) uint8 {
 func getMaxTXPowerOffsetIndex() int {
 	var idx int
 	for i := 0; ; i++ {
-		offset, err := config.C.NetworkServer.Band.Band.GetTXPowerOffset(i)
+		offset, err := band.Band().GetTXPowerOffset(i)
 		if err != nil {
 			break
 		}
@@ -177,7 +189,7 @@ func getMaxTXPowerOffsetIndex() int {
 	return idx
 }
 
-func getMaxSupportedTXPowerOffsetIndexForNode(ds storage.DeviceSession) int {
+func getMaxSupportedTXPowerOffsetIndexForDevice(ds storage.DeviceSession) int {
 	if ds.MaxSupportedTXPowerIndex != 0 {
 		return ds.MaxSupportedTXPowerIndex
 	}
@@ -190,8 +202,8 @@ func getIdealTXPowerOffsetAndDR(nStep, txPowerOffsetIndex, dr, minSupportedTXPow
 	}
 
 	if nStep > 0 {
-		if dr < getMaxAllowedDR() && dr < maxSupportedDR {
-			// maxSupportedDR is the max supported DR by the node. Depending the
+		if dr < maxSupportedDR {
+			// maxSupportedDR is the max supported DR by the device. Depending the
 			// Regional Parameters specification the node is implementing, this
 			// might not be equal to the getMaxAllowedDR value.
 			dr++
@@ -228,29 +240,4 @@ func getRequiredSNRForSF(sf int) (float64, error) {
 		return 0, fmt.Errorf("sf to required snr for does not exsists (sf: %d)", sf)
 	}
 	return snr, nil
-}
-
-func getMaxAllowedDR() int {
-	var maxDR int
-	stdChannels := config.C.NetworkServer.Band.Band.GetStandardUplinkChannelIndices()
-
-	// we take the highest data-rate from the enabled standard uplink channels
-	for _, i := range config.C.NetworkServer.Band.Band.GetEnabledUplinkChannelIndices() {
-		for _, stdI := range stdChannels {
-			if i == stdI {
-				c, _ := config.C.NetworkServer.Band.Band.GetUplinkChannel(i)
-				if c.MaxDR > maxDR {
-					maxDR = c.MaxDR
-				}
-			}
-		}
-	}
-	return maxDR
-}
-
-func getMaxSupportedDRForNode(ds storage.DeviceSession) int {
-	if ds.MaxSupportedDR != 0 {
-		return ds.MaxSupportedDR
-	}
-	return getMaxAllowedDR()
 }

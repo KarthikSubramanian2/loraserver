@@ -6,16 +6,12 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
-	"github.com/pkg/errors"
-
-	"github.com/lib/pq"
-
+	"github.com/gofrs/uuid"
+	"github.com/gomodule/redigo/redis"
 	"github.com/jmoiron/sqlx"
-	uuid "github.com/satori/go.uuid"
+	"github.com/lib/pq"
+	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
-
-	"github.com/brocaar/loraserver/internal/config"
 )
 
 // Templates used for generating Redis keys
@@ -54,7 +50,11 @@ func CreateDeviceProfile(db sqlx.Execer, dp *DeviceProfile) error {
 	now := time.Now()
 
 	if dp.ID == uuid.Nil {
-		dp.ID = uuid.NewV4()
+		var err error
+		dp.ID, err = uuid.NewV4()
+		if err != nil {
+			return errors.Wrap(err, "new uuid v4 error")
+		}
 	}
 
 	dp.CreatedAt = now
@@ -120,11 +120,8 @@ func CreateDeviceProfile(db sqlx.Execer, dp *DeviceProfile) error {
 	return nil
 }
 
-// CreateDeviceProfileCache caches the given device-profile into Redis.
-// This is used for faster lookups, but also in case of roaming where we
-// only want to store the device-profile of a roaming device for a finite
-// duration.
-// the TTL of the device-profile is the same as that of the device-sessions.
+// CreateDeviceProfileCache caches the given device-profile in Redis.
+// The TTL of the device-profile is the same as that of the device-sessions.
 func CreateDeviceProfileCache(p *redis.Pool, dp DeviceProfile) error {
 	var buf bytes.Buffer
 	if err := gob.NewEncoder(&buf).Encode(dp); err != nil {
@@ -135,7 +132,7 @@ func CreateDeviceProfileCache(p *redis.Pool, dp DeviceProfile) error {
 	defer c.Close()
 
 	key := fmt.Sprintf(DeviceProfileKeyTempl, dp.ID)
-	exp := int64(config.C.NetworkServer.DeviceSessionTTL) / int64(time.Millisecond)
+	exp := int64(deviceSessionTTL) / int64(time.Millisecond)
 
 	_, err := c.Do("PSETEX", key, exp, buf.Bytes())
 	if err != nil {

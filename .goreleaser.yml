@@ -1,5 +1,4 @@
-git:
-  short_hash: true
+project_name: loraserver
 
 builds:
   - main: cmd/loraserver/main.go
@@ -22,4 +21,25 @@ builds:
         goarch: 386
 
 release:
-  draft: true
+  disable: true
+
+nfpm:
+  vendor: LoRa Server project
+  homepage: https://www.loraserver.io/
+  maintainer: Orne Brocaar <info@brocaar.com>
+  description: LoRa Server
+  license: MIT
+  formats:
+    - deb
+  bindir: /usr/bin
+  files:
+    "packaging/files/loraserver.rotate": "/etc/logrotate.d/loraserver"
+    "packaging/files/loraserver.init": "/usr/lib/loraserver/scripts/loraserver.init"
+    "packaging/files/loraserver.service": "/usr/lib/loraserver/scripts/loraserver.service"
+    "packaging/files/loraserver-eu868.toml": "/etc/loraserver/examples/loraserver-eu868.toml"
+    "packaging/files/loraserver-us915.toml": "/etc/loraserver/examples/loraserver-us915.toml"
+  config_files:
+    "packaging/files/loraserver.toml": "/etc/loraserver/loraserver.toml"
+  scripts:
+    postinstall: "packaging/scripts/post-install.sh"
+    postremove: "packaging/scripts/post-remove.sh"

@@ -1,22 +1,52 @@
 package uplink
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"fmt"
 	"sync"
+	"time"
 
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/brocaar/loraserver/api/gw"
+	gwbackend "github.com/brocaar/loraserver/internal/backend/gateway"
 	"github.com/brocaar/loraserver/internal/config"
+	"github.com/brocaar/loraserver/internal/downlink/ack"
 	"github.com/brocaar/loraserver/internal/framelog"
+	"github.com/brocaar/loraserver/internal/gateway"
 	"github.com/brocaar/loraserver/internal/models"
+	"github.com/brocaar/loraserver/internal/storage"
 	"github.com/brocaar/loraserver/internal/uplink/data"
 	"github.com/brocaar/loraserver/internal/uplink/join"
 	"github.com/brocaar/loraserver/internal/uplink/proprietary"
 	"github.com/brocaar/loraserver/internal/uplink/rejoin"
 	"github.com/brocaar/lorawan"
 )
+
+var (
+	deduplicationDelay time.Duration
+)
+
+// Setup configures the package.
+func Setup(conf config.Config) error {
+	if err := data.Setup(conf); err != nil {
+		return errors.Wrap(err, "configure uplink/data error")
+	}
+
+	if err := join.Setup(conf); err != nil {
+		return errors.Wrap(err, "configure uplink/join error")
+	}
+
+	if err := rejoin.Setup(conf); err != nil {
+		return errors.Wrap(err, "configure uplink/rejoin error")
+	}
+
+	deduplicationDelay = conf.NetworkServer.DeduplicationDelay
+
+	return nil
+}
 
 // Server represents a server listening for uplink packets.
 type Server struct {
@@ -35,13 +65,19 @@ func (s *Server) Start() error {
 		defer s.wg.Done()
 		HandleRXPackets(&s.wg)
 	}()
+
+	go func() {
+		s.wg.Add(1)
+		defer s.wg.Done()
+		HandleDownlinkTXAcks(&s.wg)
+	}()
 	return nil
 }
 
 // Stop closes the gateway backend and waits for the server to complete the
 // pending packets.
 func (s *Server) Stop() error {
-	if err := config.C.NetworkServer.Gateway.Backend.Backend.Close(); err != nil {
+	if err := gwbackend.Backend().Close(); err != nil {
 		return fmt.Errorf("close gateway backend error: %s", err)
 	}
 	log.Info("waiting for pending actions to complete")
@@ -52,34 +88,58 @@ func (s *Server) Stop() error {
 // HandleRXPackets consumes received packets by the gateway and handles them
 // in a separate go-routine. Errors are logged.
 func HandleRXPackets(wg *sync.WaitGroup) {
-	for rxPacket := range config.C.NetworkServer.Gateway.Backend.Backend.RXPacketChan() {
-		go func(rxPacket gw.RXPacket) {
+	for uplinkFrame := range gwbackend.Backend().RXPacketChan() {
+		go func(uplinkFrame gw.UplinkFrame) {
 			wg.Add(1)
 			defer wg.Done()
-			if err := HandleRXPacket(rxPacket); err != nil {
-				data, _ := rxPacket.PHYPayload.MarshalText()
-				log.WithField("data_base64", string(data)).Errorf("processing rx packet error: %s", err)
+			if err := HandleRXPacket(uplinkFrame); err != nil {
+				data := base64.StdEncoding.EncodeToString(uplinkFrame.PhyPayload)
+				log.WithField("data_base64", data).WithError(err).Error("processing uplink frame error")
 			}
-		}(rxPacket)
+		}(uplinkFrame)
 	}
 }
 
 // HandleRXPacket handles a single rxpacket.
-func HandleRXPacket(rxPacket gw.RXPacket) error {
-	return collectPackets(rxPacket)
+func HandleRXPacket(uplinkFrame gw.UplinkFrame) error {
+	return collectPackets(uplinkFrame)
 }
 
-func collectPackets(rxPacket gw.RXPacket) error {
-	return collectAndCallOnce(config.C.Redis.Pool, rxPacket, func(rxPacket models.RXPacket) error {
-		uplinkFrameSet, err := framelog.CreateUplinkFrameSet(rxPacket)
-		if err != nil {
-			return errors.Wrap(err, "create uplink frame-set error")
+// HandleDownlinkTXAcks consumes received downlink tx acknowledgements from
+// the gateway.
+func HandleDownlinkTXAcks(wg *sync.WaitGroup) {
+	for downlinkTXAck := range gwbackend.Backend().DownlinkTXAckChan() {
+		go func(downlinkTXAck gw.DownlinkTXAck) {
+			wg.Add(1)
+			defer wg.Done()
+			if err := ack.HandleDownlinkTXAck(downlinkTXAck); err != nil {
+				log.WithFields(log.Fields{
+					"gateway_id": hex.EncodeToString(downlinkTXAck.GatewayId),
+					"token":      downlinkTXAck.Token,
+				}).WithError(err).Error("handle downlink tx ack error")
+			}
+
+		}(downlinkTXAck)
+	}
+}
+
+func collectPackets(uplinkFrame gw.UplinkFrame) error {
+	return collectAndCallOnce(storage.RedisPool(), uplinkFrame, func(rxPacket models.RXPacket) error {
+		// update the gateway meta-data
+		if err := gateway.UpdateMetaDataInRxInfoSet(storage.DB(), storage.RedisPool(), rxPacket.RXInfoSet); err != nil {
+			log.WithError(err).Error("update gateway meta-data in rx-info set error")
 		}
 
-		if err := framelog.LogUplinkFrameForGateways(uplinkFrameSet); err != nil {
+		// log the frame for each receiving gatewa
+		if err := framelog.LogUplinkFrameForGateways(storage.RedisPool(), gw.UplinkFrameSet{
+			PhyPayload: uplinkFrame.PhyPayload,
+			TxInfo:     rxPacket.TXInfo,
+			RxInfo:     rxPacket.RXInfoSet,
+		}); err != nil {
 			log.WithError(err).Error("log uplink frames for gateways error")
 		}
 
+		// handle the frame based on message-type
 		switch rxPacket.PHYPayload.MHDR.MType {
 		case lorawan.JoinRequest:
 			return join.Handle(rxPacket)

@@ -2,8 +2,8 @@ package cmd
 
 import (
 	"bytes"
-	"fmt"
 	"io/ioutil"
+	"reflect"
 	"strings"
 	"time"
 
@@ -49,31 +49,52 @@ func init() {
 	viper.BindPFlag("general.log_level", rootCmd.PersistentFlags().Lookup("log-level"))
 
 	// default values
+	viper.SetDefault("redis.url", "redis://localhost:6379")
+	viper.SetDefault("redis.max_idle", 10)
+	viper.SetDefault("redis.idle_timeout", 5*time.Minute)
+
+	viper.SetDefault("postgresql.dsn", "postgres://localhost/loraserver_ns?sslmode=disable")
+	viper.SetDefault("postgresql.automigrate", true)
+
 	viper.SetDefault("network_server.net_id", "000000")
 	viper.SetDefault("network_server.band.name", "EU_863_870")
 	viper.SetDefault("network_server.api.bind", "0.0.0.0:8000")
-	viper.SetDefault("redis.url", "redis://localhost:6379")
-	viper.SetDefault("postgresql.dsn", "postgres://localhost/loraserver_ns?sslmode=disable")
-	viper.SetDefault("postgresql.automigrate", true)
-	viper.SetDefault("network_server.gateway.backend.mqtt.server", "tcp://localhost:1883")
+
 	viper.SetDefault("network_server.deduplication_delay", 200*time.Millisecond)
 	viper.SetDefault("network_server.get_downlink_data_delay", 100*time.Millisecond)
+	viper.SetDefault("network_server.device_session_ttl", time.Hour*24*31)
+
 	viper.SetDefault("network_server.gateway.stats.aggregation_intervals", []string{"minute", "hour", "day"})
 	viper.SetDefault("network_server.gateway.stats.create_gateway_on_stats", true)
-	viper.SetDefault("network_server.device_session_ttl", time.Hour*24*31)
+	viper.SetDefault("network_server.gateway.backend.mqtt.server", "tcp://localhost:1883")
+
 	viper.SetDefault("join_server.default.server", "http://localhost:8003")
+
 	viper.SetDefault("network_server.network_settings.installation_margin", 10)
 	viper.SetDefault("network_server.network_settings.rx1_delay", 1)
 	viper.SetDefault("network_server.network_settings.rx2_frequency", -1)
 	viper.SetDefault("network_server.network_settings.rx2_dr", -1)
 	viper.SetDefault("network_server.network_settings.downlink_tx_power", -1)
 	viper.SetDefault("network_server.network_settings.disable_adr", false)
-	viper.SetDefault("network_server.gateway.backend.mqtt.uplink_topic_template", "gateway/+/rx")
-	viper.SetDefault("network_server.gateway.backend.mqtt.downlink_topic_template", "gateway/{{ .MAC }}/tx")
-	viper.SetDefault("network_server.gateway.backend.mqtt.stats_topic_template", "gateway/+/stats")
-	viper.SetDefault("network_server.gateway.backend.mqtt.ack_topic_template", "gateway/+/ack")
-	viper.SetDefault("network_server.gateway.backend.mqtt.config_topic_template", "gateway/{{ .MAC }}/config")
+
+	viper.SetDefault("network_server.gateway.backend.type", "mqtt")
+
+	viper.SetDefault("network_server.scheduler.scheduler_interval", 1*time.Second)
+	viper.SetDefault("network_server.scheduler.class_c.downlink_lock_duration", 2*time.Second)
+	viper.SetDefault("network_server.gateway.backend.mqtt.event_topic", "gateway/+/event/+")
+	viper.SetDefault("network_server.gateway.backend.mqtt.command_topic_template", "gateway/{{ .GatewayID }}/command/{{ .CommandType }}")
 	viper.SetDefault("network_server.gateway.backend.mqtt.clean_session", true)
+	viper.SetDefault("join_server.resolve_domain_suffix", ".joineuis.lora-alliance.org")
+	viper.SetDefault("join_server.default.server", "http://localhost:8003")
+
+	viper.SetDefault("network_server.gateway.backend.gcp_pub_sub.uplink_retention_duration", time.Hour*24)
+
+	viper.SetDefault("metrics.timezone", "Local")
+	viper.SetDefault("metrics.redis.aggregation_intervals", []string{"MINUTE", "HOUR", "DAY", "MONTH"})
+	viper.SetDefault("metrics.redis.minute_aggregation_ttl", time.Hour*2)
+	viper.SetDefault("metrics.redis.hour_aggregation_ttl", time.Hour*48)
+	viper.SetDefault("metrics.redis.day_aggregation_ttl", time.Hour*24*90)
+	viper.SetDefault("metrics.redis.month_aggregation_ttl", time.Hour*24*730)
 
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(configCmd)
@@ -115,6 +136,8 @@ func initConfig() {
 		}
 	}
 
+	viperBindEnvs(config.C)
+
 	if err := viper.Unmarshal(&config.C); err != nil {
 		log.WithError(err).Fatal("unmarshal config error")
 	}
@@ -122,36 +145,28 @@ func initConfig() {
 	if err := config.C.NetworkServer.NetID.UnmarshalText([]byte(config.C.NetworkServer.NetIDString)); err != nil {
 		log.WithError(err).Fatal("decode net_id error")
 	}
+}
 
-	if len(config.C.NetworkServer.NetworkSettings.ExtraChannels) == 0 && len(config.C.NetworkServer.NetworkSettings.ExtraChannelsLegacy) != 0 {
-		for _, freq := range config.C.NetworkServer.NetworkSettings.ExtraChannelsLegacy {
-			config.C.NetworkServer.NetworkSettings.ExtraChannels = append(config.C.NetworkServer.NetworkSettings.ExtraChannels, struct {
-				Frequency int
-				MinDR     int `mapstructure:"min_dr"`
-				MaxDR     int `mapstructure:"max_dr"`
-			}{
-				Frequency: freq,
-				MinDR:     0,
-				MaxDR:     5,
-			})
+func viperBindEnvs(iface interface{}, parts ...string) {
+	ifv := reflect.ValueOf(iface)
+	ift := reflect.TypeOf(iface)
+	for i := 0; i < ift.NumField(); i++ {
+		v := ifv.Field(i)
+		t := ift.Field(i)
+		tv, ok := t.Tag.Lookup("mapstructure")
+		if !ok {
+			tv = strings.ToLower(t.Name)
 		}
-	}
+		if tv == "-" {
+			continue
+		}
 
-	if config.C.NetworkServer.NetworkSettings.EnabledUplinkChannelsLegacy != "" && len(config.C.NetworkServer.NetworkSettings.EnabledUplinkChannels) == 0 {
-		blocks := strings.Split(config.C.NetworkServer.NetworkSettings.EnabledUplinkChannelsLegacy, ",")
-		for _, block := range blocks {
-			block = strings.Trim(block, " ")
-			var start, end int
-			if _, err := fmt.Sscanf(block, "%d-%d", &start, &end); err != nil {
-				if _, err := fmt.Sscanf(block, "%d", &start); err != nil {
-					log.WithError(err).Fatal("parse channel range error")
-				}
-				end = start
-			}
-
-			for ; start <= end; start++ {
-				config.C.NetworkServer.NetworkSettings.EnabledUplinkChannels = append(config.C.NetworkServer.NetworkSettings.EnabledUplinkChannels, start)
-			}
+		switch v.Kind() {
+		case reflect.Struct:
+			viperBindEnvs(v.Interface(), append(parts, tv)...)
+		default:
+			key := strings.Join(append(parts, tv), ".")
+			viper.BindEnv(key)
 		}
 	}
 }

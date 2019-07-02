@@ -4,76 +4,86 @@ import (
 	"os"
 	"time"
 
-	"github.com/garyburd/redigo/redis"
+	"github.com/jmoiron/sqlx"
+
 	"github.com/golang/protobuf/ptypes/empty"
+	"github.com/gomodule/redigo/redis"
 	migrate "github.com/rubenv/sql-migrate"
 	log "github.com/sirupsen/logrus"
 	context "golang.org/x/net/context"
 	"google.golang.org/grpc"
 
 	"github.com/brocaar/loraserver/api/as"
+	"github.com/brocaar/loraserver/api/geo"
 	"github.com/brocaar/loraserver/api/gw"
 	"github.com/brocaar/loraserver/api/nc"
 	"github.com/brocaar/loraserver/internal/api/client/asclient"
-	"github.com/brocaar/loraserver/internal/api/client/jsclient"
-	"github.com/brocaar/loraserver/internal/common"
+	"github.com/brocaar/loraserver/internal/band"
 	"github.com/brocaar/loraserver/internal/config"
 	"github.com/brocaar/loraserver/internal/migrations"
 	"github.com/brocaar/lorawan"
-	"github.com/brocaar/lorawan/backend"
-	"github.com/brocaar/lorawan/band"
+	loraband "github.com/brocaar/lorawan/band"
 )
 
 func init() {
 	log.SetLevel(log.ErrorLevel)
 
-	config.C.NetworkServer.DeviceSessionTTL = time.Hour
-	config.C.NetworkServer.Band.Name = band.EU_863_870
-	config.C.NetworkServer.Band.Band, _ = band.GetConfig(config.C.NetworkServer.Band.Name, false, lorawan.DwellTimeNoLimit)
-
-	config.C.NetworkServer.DeduplicationDelay = 5 * time.Millisecond
-	config.C.NetworkServer.GetDownlinkDataDelay = 5 * time.Millisecond
-	config.C.NetworkServer.NetworkSettings.DownlinkTXPower = -1
-
-	config.C.NetworkServer.Gateway.Stats.Timezone = "Europe/Amsterdam"
-	loc, err := time.LoadLocation(config.C.NetworkServer.Gateway.Stats.Timezone)
-	if err != nil {
-		panic(err)
-	}
-	config.C.NetworkServer.Gateway.Stats.TimezoneLocation = loc
 }
 
 // Config contains the test configuration.
 type Config struct {
-	RedisURL    string
-	PostgresDSN string
+	RedisURL     string
+	PostgresDSN  string
+	MQTTServer   string
+	MQTTUsername string
+	MQTTPassword string
 }
 
 // GetConfig returns the test configuration.
-func GetConfig() *Config {
-	var err error
-	log.SetLevel(log.ErrorLevel)
+func GetConfig() config.Config {
+	log.SetLevel(log.FatalLevel)
 
-	config.C.NetworkServer.Band.Band, err = band.GetConfig(band.EU_863_870, false, lorawan.DwellTimeNoLimit)
-	if err != nil {
+	var c config.Config
+	c.NetworkServer.Band.Name = loraband.EU_863_870
+
+	if err := band.Setup(c); err != nil {
 		panic(err)
 	}
 
-	config.C.NetworkServer.NetworkSettings.RX2Frequency = config.C.NetworkServer.Band.Band.GetDefaults().RX2Frequency
-	config.C.NetworkServer.NetworkSettings.RX2DR = config.C.NetworkServer.Band.Band.GetDefaults().RX2DataRate
-	config.C.NetworkServer.NetworkSettings.RX1Delay = 0
+	c.Redis.URL = "redis://localhost:6379/1"
+	c.PostgreSQL.DSN = "postgres://localhost/loraserver_ns_test?sslmode=disable"
 
-	c := &Config{
-		RedisURL:    "redis://localhost:6379",
-		PostgresDSN: "postgres://localhost/loraserver_ns_test?sslmode=disable",
-	}
+	c.NetworkServer.NetID = lorawan.NetID{3, 2, 1}
+	c.NetworkServer.DeviceSessionTTL = time.Hour
+	c.NetworkServer.DeduplicationDelay = 5 * time.Millisecond
+	c.NetworkServer.GetDownlinkDataDelay = 5 * time.Millisecond
+
+	c.NetworkServer.NetworkSettings.RX2Frequency = band.Band().GetDefaults().RX2Frequency
+	c.NetworkServer.NetworkSettings.RX2DR = band.Band().GetDefaults().RX2DataRate
+	c.NetworkServer.NetworkSettings.RX1Delay = 0
+	c.NetworkServer.NetworkSettings.DownlinkTXPower = -1
+
+	c.NetworkServer.Scheduler.SchedulerInterval = time.Second
+
+	c.NetworkServer.Gateway.Backend.MQTT.Server = "tcp://127.0.0.1:1883"
+	c.NetworkServer.Gateway.Backend.MQTT.CleanSession = true
+	c.NetworkServer.Gateway.Backend.MQTT.EventTopic = "gateway/+/event/+"
+	c.NetworkServer.Gateway.Backend.MQTT.CommandTopicTemplate = "gateway/{{ .GatewayID }}/command/{{ .CommandType }}"
 
 	if v := os.Getenv("TEST_REDIS_URL"); v != "" {
-		c.RedisURL = v
+		c.Redis.URL = v
 	}
-
 	if v := os.Getenv("TEST_POSTGRES_DSN"); v != "" {
-		c.PostgresDSN = v
+		c.PostgreSQL.DSN = v
+	}
+	if v := os.Getenv("TEST_MQTT_SERVER"); v != "" {
+		c.NetworkServer.Gateway.Backend.MQTT.Server = v
+	}
+	if v := os.Getenv("TEST_MQTT_USERNAME"); v != "" {
+		c.NetworkServer.Gateway.Backend.MQTT.Username = v
+	}
+	if v := os.Getenv("TEST_MQTT_PASSWORD"); v != "" {
+		c.NetworkServer.Gateway.Backend.MQTT.Password = v
 	}
 
 	return c
@@ -102,57 +112,64 @@ func MustPrefillRedisPool(p *redis.Pool, count int) {
 }
 
 // MustResetDB re-applies all database migrations.
-func MustResetDB(db *common.DBLogger) {
+func MustResetDB(db *sqlx.DB) {
 	m := &migrate.AssetMigrationSource{
 		Asset:    migrations.Asset,
 		AssetDir: migrations.AssetDir,
 		Dir:      "",
 	}
-	if _, err := migrate.Exec(db.DB.DB, "postgres", m, migrate.Down); err != nil {
+	if _, err := migrate.Exec(db.DB, "postgres", m, migrate.Down); err != nil {
 		log.Fatal(err)
 	}
-	if _, err := migrate.Exec(db.DB.DB, "postgres", m, migrate.Up); err != nil {
+	if _, err := migrate.Exec(db.DB, "postgres", m, migrate.Up); err != nil {
 		log.Fatal(err)
 	}
 }
 
 // GatewayBackend is a test gateway backend.
 type GatewayBackend struct {
-	rxPacketChan            chan gw.RXPacket
-	TXPacketChan            chan gw.TXPacket
-	GatewayConfigPacketChan chan gw.GatewayConfigPacket
-	statsPacketChan         chan gw.GatewayStatsPacket
+	rxPacketChan            chan gw.UplinkFrame
+	TXPacketChan            chan gw.DownlinkFrame
+	GatewayConfigPacketChan chan gw.GatewayConfiguration
+	statsPacketChan         chan gw.GatewayStats
+	downlinkTXAckChan       chan gw.DownlinkTXAck
 }
 
 // NewGatewayBackend returns a new GatewayBackend.
 func NewGatewayBackend() *GatewayBackend {
 	return &GatewayBackend{
-		rxPacketChan:            make(chan gw.RXPacket, 100),
-		TXPacketChan:            make(chan gw.TXPacket, 100),
-		GatewayConfigPacketChan: make(chan gw.GatewayConfigPacket, 100),
+		rxPacketChan:            make(chan gw.UplinkFrame, 100),
+		TXPacketChan:            make(chan gw.DownlinkFrame, 100),
+		GatewayConfigPacketChan: make(chan gw.GatewayConfiguration, 100),
+		downlinkTXAckChan:       make(chan gw.DownlinkTXAck, 100),
 	}
 }
 
 // SendTXPacket method.
-func (b *GatewayBackend) SendTXPacket(txPacket gw.TXPacket) error {
+func (b *GatewayBackend) SendTXPacket(txPacket gw.DownlinkFrame) error {
 	b.TXPacketChan <- txPacket
 	return nil
 }
 
 // SendGatewayConfigPacket method.
-func (b *GatewayBackend) SendGatewayConfigPacket(config gw.GatewayConfigPacket) error {
+func (b *GatewayBackend) SendGatewayConfigPacket(config gw.GatewayConfiguration) error {
 	b.GatewayConfigPacketChan <- config
 	return nil
 }
 
 // RXPacketChan method.
-func (b *GatewayBackend) RXPacketChan() chan gw.RXPacket {
+func (b *GatewayBackend) RXPacketChan() chan gw.UplinkFrame {
 	return b.rxPacketChan
 }
 
 // StatsPacketChan method.
-func (b *GatewayBackend) StatsPacketChan() chan gw.GatewayStatsPacket {
+func (b *GatewayBackend) StatsPacketChan() chan gw.GatewayStats {
 	return b.statsPacketChan
+}
+
+// DownlinkTXAckChan method.
+func (b *GatewayBackend) DownlinkTXAckChan() chan gw.DownlinkTXAck {
+	return b.downlinkTXAckChan
 }
 
 // Close method.
@@ -161,55 +178,6 @@ func (b *GatewayBackend) Close() error {
 		close(b.rxPacketChan)
 	}
 	return nil
-}
-
-// JoinServerPool is a join-server pool for testing.
-type JoinServerPool struct {
-	Client     jsclient.Client
-	GetJoinEUI lorawan.EUI64
-}
-
-// NewJoinServerPool create a join-server pool for testing.
-func NewJoinServerPool(client jsclient.Client) jsclient.Pool {
-	return &JoinServerPool{
-		Client: client,
-	}
-}
-
-// Get method.
-func (p *JoinServerPool) Get(joinEUI lorawan.EUI64) (jsclient.Client, error) {
-	p.GetJoinEUI = joinEUI
-	return p.Client, nil
-}
-
-// JoinServerClient is a join-server client for testing.
-type JoinServerClient struct {
-	JoinReqPayloadChan   chan backend.JoinReqPayload
-	RejoinReqPayloadChan chan backend.RejoinReqPayload
-	JoinReqError         error
-	RejoinReqError       error
-	JoinAnsPayload       backend.JoinAnsPayload
-	RejoinAnsPayload     backend.RejoinAnsPayload
-}
-
-// NewJoinServerClient creates a new join-server client.
-func NewJoinServerClient() *JoinServerClient {
-	return &JoinServerClient{
-		JoinReqPayloadChan:   make(chan backend.JoinReqPayload, 100),
-		RejoinReqPayloadChan: make(chan backend.RejoinReqPayload, 100),
-	}
-}
-
-// JoinReq method.
-func (c *JoinServerClient) JoinReq(pl backend.JoinReqPayload) (backend.JoinAnsPayload, error) {
-	c.JoinReqPayloadChan <- pl
-	return c.JoinAnsPayload, c.JoinReqError
-}
-
-// RejoinReq method.
-func (c *JoinServerClient) RejoinReq(pl backend.RejoinReqPayload) (backend.RejoinAnsPayload, error) {
-	c.RejoinReqPayloadChan <- pl
-	return c.RejoinAnsPayload, c.RejoinReqError
 }
 
 // ApplicationServerPool is an application-server pool for testing.
@@ -234,22 +202,25 @@ func NewApplicationServerPool(client *ApplicationClient) asclient.Pool {
 
 // ApplicationClient is an application client for testing.
 type ApplicationClient struct {
-	HandleDataUpErr        error
-	HandleProprietaryUpErr error
-	HandleDownlinkACKErr   error
-	SetDeviceStatusError   error
+	HandleDataUpErr         error
+	HandleProprietaryUpErr  error
+	HandleDownlinkACKErr    error
+	SetDeviceStatusError    error
+	SetDeviceLocationErrror error
 
 	HandleDataUpChan        chan as.HandleUplinkDataRequest
 	HandleProprietaryUpChan chan as.HandleProprietaryUplinkRequest
 	HandleErrorChan         chan as.HandleErrorRequest
 	HandleDownlinkACKChan   chan as.HandleDownlinkACKRequest
 	SetDeviceStatusChan     chan as.SetDeviceStatusRequest
+	SetDeviceLocationChan   chan as.SetDeviceLocationRequest
 
 	HandleDataUpResponse        empty.Empty
 	HandleProprietaryUpResponse empty.Empty
 	HandleErrorResponse         empty.Empty
 	HandleDownlinkACKResponse   empty.Empty
 	SetDeviceStatusResponse     empty.Empty
+	SetDeviceLocationResponse   empty.Empty
 }
 
 // NewApplicationClient returns a new ApplicationClient.
@@ -260,6 +231,7 @@ func NewApplicationClient() *ApplicationClient {
 		HandleErrorChan:         make(chan as.HandleErrorRequest, 100),
 		HandleDownlinkACKChan:   make(chan as.HandleDownlinkACKRequest, 100),
 		SetDeviceStatusChan:     make(chan as.SetDeviceStatusRequest, 100),
+		SetDeviceLocationChan:   make(chan as.SetDeviceLocationRequest, 100),
 	}
 }
 
@@ -299,6 +271,12 @@ func (t *ApplicationClient) SetDeviceStatus(ctx context.Context, in *as.SetDevic
 	return &t.SetDeviceStatusResponse, t.SetDeviceStatusError
 }
 
+// SetDeviceLocation method.
+func (t *ApplicationClient) SetDeviceLocation(ctx context.Context, in *as.SetDeviceLocationRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
+	t.SetDeviceLocationChan <- *in
+	return &t.SetDeviceLocationResponse, t.SetDeviceLocationErrror
+}
+
 // NetworkControllerClient is a network-controller client for testing.
 type NetworkControllerClient struct {
 	HandleRXInfoChan           chan nc.HandleUplinkMetaDataRequest
@@ -326,4 +304,23 @@ func (t *NetworkControllerClient) HandleUplinkMetaData(ctx context.Context, in *
 func (t *NetworkControllerClient) HandleUplinkMACCommand(ctx context.Context, in *nc.HandleUplinkMACCommandRequest, opts ...grpc.CallOption) (*empty.Empty, error) {
 	t.HandleDataUpMACCommandChan <- *in
 	return &empty.Empty{}, nil
+}
+
+// GeolocationClient is a geolocation client for testing.
+type GeolocationClient struct {
+	ResolveTDOAChan     chan geo.ResolveTDOARequest
+	ResolveTDOAResponse geo.ResolveTDOAResponse
+}
+
+// NewGeolocationClient creates a new GeolocationClient.
+func NewGeolocationClient() *GeolocationClient {
+	return &GeolocationClient{
+		ResolveTDOAChan: make(chan geo.ResolveTDOARequest, 100),
+	}
+}
+
+// ResolveTDOA method.
+func (g *GeolocationClient) ResolveTDOA(ctx context.Context, in *geo.ResolveTDOARequest, opts ...grpc.CallOption) (*geo.ResolveTDOAResponse, error) {
+	g.ResolveTDOAChan <- *in
+	return &g.ResolveTDOAResponse, nil
 }

@@ -5,26 +5,28 @@ import (
 	"testing"
 
 	. "github.com/smartystreets/goconvey/convey"
+	"github.com/stretchr/testify/require"
 
-	"github.com/brocaar/loraserver/internal/common"
-	"github.com/brocaar/loraserver/internal/config"
+	"github.com/brocaar/loraserver/internal/band"
 	"github.com/brocaar/loraserver/internal/test"
 	"github.com/brocaar/lorawan"
-	"github.com/brocaar/lorawan/band"
+	loraband "github.com/brocaar/lorawan/band"
 )
 
 func TestGetRandomDevAddr(t *testing.T) {
 	conf := test.GetConfig()
+	if err := Setup(conf); err != nil {
+		t.Fatal(err)
+	}
 
 	Convey("Given a Redis database and NetID 010203", t, func() {
-		p := common.NewRedisPool(conf.RedisURL)
-		test.MustFlushRedis(p)
+		test.MustFlushRedis(RedisPool())
 		netID := lorawan.NetID{1, 2, 3}
 
 		Convey("When calling getRandomDevAddr many times, it should always return an unique DevAddr", func() {
 			log := make(map[lorawan.DevAddr]struct{})
 			for i := 0; i < 1000; i++ {
-				devAddr, err := GetRandomDevAddr(p, netID)
+				devAddr, err := GetRandomDevAddr(RedisPool(), netID)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -90,22 +92,24 @@ func TestUplinkHistory(t *testing.T) {
 
 func TestDeviceSession(t *testing.T) {
 	conf := test.GetConfig()
+	if err := Setup(conf); err != nil {
+		t.Fatal(err)
+	}
 
 	Convey("Given a clean Redis database", t, func() {
-		p := common.NewRedisPool(conf.RedisURL)
-		test.MustFlushRedis(p)
+		test.MustFlushRedis(RedisPool())
 
 		Convey("Given a device-session", func() {
 			s := DeviceSession{
 				DevAddr:              lorawan.DevAddr{1, 2, 3, 4},
 				DevEUI:               lorawan.EUI64{1, 2, 3, 4, 5, 6, 7, 8},
-				ExtraUplinkChannels:  map[int]band.Channel{},
+				ExtraUplinkChannels:  map[int]loraband.Channel{},
 				UplinkGatewayHistory: map[lorawan.EUI64]UplinkGatewayHistory{},
 				RX2Frequency:         869525000,
 			}
 
 			Convey("When getting a non-existing device-session", func() {
-				_, err := GetDeviceSession(p, s.DevEUI)
+				_, err := GetDeviceSession(RedisPool(), s.DevEUI)
 
 				Convey("Then the expected error is returned", func() {
 					So(err, ShouldResemble, ErrDoesNotExist)
@@ -113,30 +117,30 @@ func TestDeviceSession(t *testing.T) {
 			})
 
 			Convey("When saving the device-session", func() {
-				So(SaveDeviceSession(p, s), ShouldBeNil)
+				So(SaveDeviceSession(RedisPool(), s), ShouldBeNil)
 
 				Convey("Then GetDeviceSessionsForDevAddr includes the device-session", func() {
-					sessions, err := GetDeviceSessionsForDevAddr(p, s.DevAddr)
+					sessions, err := GetDeviceSessionsForDevAddr(RedisPool(), s.DevAddr)
 					So(err, ShouldBeNil)
 					So(sessions, ShouldHaveLength, 1)
 					So(sessions[0], ShouldResemble, s)
 				})
 
 				Convey("Then the session can be retrieved by it's DevEUI", func() {
-					s2, err := GetDeviceSession(p, s.DevEUI)
+					s2, err := GetDeviceSession(RedisPool(), s.DevEUI)
 					So(err, ShouldBeNil)
 					So(s2, ShouldResemble, s)
 				})
 
 				Convey("Then DeleteDeviceSession deletes the device-session", func() {
-					So(DeleteDeviceSession(p, s.DevEUI), ShouldBeNil)
-					So(DeleteDeviceSession(p, s.DevEUI), ShouldEqual, ErrDoesNotExist)
+					So(DeleteDeviceSession(RedisPool(), s.DevEUI), ShouldBeNil)
+					So(DeleteDeviceSession(RedisPool(), s.DevEUI), ShouldEqual, ErrDoesNotExist)
 
 				})
 			})
 
 			Convey("When calling validateAndGetFullFCntUp", func() {
-				defaults := config.C.NetworkServer.Band.Band.GetDefaults()
+				defaults := band.Band().GetDefaults()
 
 				testTable := []struct {
 					ServerFCnt uint32
@@ -144,10 +148,10 @@ func TestDeviceSession(t *testing.T) {
 					FullFCnt   uint32
 					Valid      bool
 				}{
-					{0, 1, 1, true},                                                         // one packet was lost
-					{1, 1, 1, true},                                                         // ideal case, the FCnt has the expected value
-					{2, 1, 0, false},                                                        // old packet received or re-transmission
-					{0, defaults.MaxFCntGap, 0, false},                                      // gap should be less than MaxFCntGap
+					{0, 1, 1, true},                    // one packet was lost
+					{1, 1, 1, true},                    // ideal case, the FCnt has the expected value
+					{2, 1, 0, false},                   // old packet received or re-transmission
+					{0, defaults.MaxFCntGap, 0, false}, // gap should be less than MaxFCntGap
 					{0, defaults.MaxFCntGap - 1, defaults.MaxFCntGap - 1, true},             // gap is exactly within the allowed MaxFCntGap
 					{65536, defaults.MaxFCntGap - 1, defaults.MaxFCntGap - 1 + 65536, true}, // roll-over happened, gap ix exactly within allowed MaxFCntGap
 					{65535, defaults.MaxFCntGap, 0, false},                                  // roll-over happened, but too many lost frames
@@ -165,17 +169,18 @@ func TestDeviceSession(t *testing.T) {
 					})
 				}
 			})
-
 		})
 	})
 }
 
 func TestGetDeviceSessionForPHYPayload(t *testing.T) {
 	conf := test.GetConfig()
+	if err := Setup(conf); err != nil {
+		t.Fatal(err)
+	}
 
 	Convey("Given a clean Redis database with a set of device-sessions for the same DevAddr", t, func() {
-		p := common.NewRedisPool(conf.RedisURL)
-		test.MustFlushRedis(p)
+		test.MustFlushRedis(RedisPool())
 
 		devAddr := lorawan.DevAddr{1, 2, 3, 4}
 
@@ -217,7 +222,7 @@ func TestGetDeviceSessionForPHYPayload(t *testing.T) {
 			},
 		}
 		for _, s := range deviceSessions {
-			So(SaveDeviceSession(p, s), ShouldBeNil)
+			So(SaveDeviceSession(RedisPool(), s), ShouldBeNil)
 		}
 
 		Convey("Given a set of tests", func() {
@@ -310,7 +315,7 @@ func TestGetDeviceSessionForPHYPayload(t *testing.T) {
 					}
 					So(phy.SetUplinkDataMIC(lorawan.LoRaWAN1_0, 0, 0, 0, test.FNwkSIntKey, test.SNwkSIntKey), ShouldBeNil)
 
-					s, err := GetDeviceSessionForPHYPayload(p, phy, 0, 0)
+					s, err := GetDeviceSessionForPHYPayload(RedisPool(), phy, 0, 0)
 					if test.ExpectedError != nil {
 						So(err, ShouldNotBeNil)
 						So(err.Error(), ShouldEqual, test.ExpectedError.Error())
@@ -321,6 +326,60 @@ func TestGetDeviceSessionForPHYPayload(t *testing.T) {
 					So(s.FCntUp, ShouldEqual, test.ExpectedFCntUp)
 				})
 			}
+		})
+	})
+}
+
+func (ts *StorageTestSuite) TestDeviceGatewayRXInfoSet() {
+	devEUI := lorawan.EUI64{1, 2, 3, 4, 5, 6, 7, 8}
+
+	ts.T().Run("Does not exist", func(t *testing.T) {
+		assert := require.New(t)
+
+		_, err := GetDeviceGatewayRXInfoSet(ts.RedisPool(), devEUI)
+		assert.Equal(ErrDoesNotExist, err)
+
+		sets, err := GetDeviceGatewayRXInfoSetForDevEUIs(ts.RedisPool(), []lorawan.EUI64{devEUI})
+		assert.NoError(err)
+		assert.Len(sets, 0)
+	})
+
+	ts.T().Run("Create", func(t *testing.T) {
+		assert := require.New(t)
+
+		rxInfoSet := DeviceGatewayRXInfoSet{
+			DevEUI: devEUI,
+			DR:     3,
+			Items: []DeviceGatewayRXInfo{
+				{
+					GatewayID: lorawan.EUI64{2, 2, 3, 4, 5, 6, 7, 8},
+					RSSI:      -60,
+					LoRaSNR:   5.5,
+				},
+			},
+		}
+		assert.NoError(SaveDeviceGatewayRXInfoSet(ts.RedisPool(), rxInfoSet))
+
+		t.Run("Get", func(t *testing.T) {
+			assert := require.New(t)
+
+			rxInfoSetGet, err := GetDeviceGatewayRXInfoSet(ts.RedisPool(), devEUI)
+			assert.NoError(err)
+			assert.Equal(rxInfoSet, rxInfoSetGet)
+
+			rxInfoSets, err := GetDeviceGatewayRXInfoSetForDevEUIs(ts.RedisPool(), []lorawan.EUI64{devEUI})
+			assert.NoError(err)
+			assert.Len(rxInfoSets, 1)
+			assert.Equal(rxInfoSet, rxInfoSets[0])
+		})
+
+		t.Run("Delete", func(t *testing.T) {
+			assert := require.New(t)
+
+			assert.NoError(DeleteDeviceGatewayRXInfoSet(ts.RedisPool(), devEUI))
+			_, err := GetDeviceGatewayRXInfoSet(ts.RedisPool(), devEUI)
+			assert.Equal(ErrDoesNotExist, err)
+			assert.Equal(ErrDoesNotExist, DeleteDeviceGatewayRXInfoSet(ts.RedisPool(), devEUI))
 		})
 	})
 }

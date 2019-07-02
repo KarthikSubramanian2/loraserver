@@ -3,40 +3,29 @@ package api
 import (
 	"time"
 
+	"github.com/gofrs/uuid"
 	"github.com/golang/protobuf/ptypes"
 	"github.com/golang/protobuf/ptypes/empty"
 	"github.com/jmoiron/sqlx"
-	"github.com/satori/go.uuid"
 	log "github.com/sirupsen/logrus"
 	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 
 	"github.com/brocaar/loraserver/api/common"
-	gwPB "github.com/brocaar/loraserver/api/gw"
 	"github.com/brocaar/loraserver/api/ns"
+	"github.com/brocaar/loraserver/internal/band"
 	"github.com/brocaar/loraserver/internal/config"
 	"github.com/brocaar/loraserver/internal/downlink/data/classb"
+	"github.com/brocaar/loraserver/internal/downlink/multicast"
 	proprietarydown "github.com/brocaar/loraserver/internal/downlink/proprietary"
 	"github.com/brocaar/loraserver/internal/framelog"
 	"github.com/brocaar/loraserver/internal/gps"
+	"github.com/brocaar/loraserver/internal/helpers"
 	"github.com/brocaar/loraserver/internal/storage"
 	"github.com/brocaar/lorawan"
 	"github.com/brocaar/lorawan/backend"
-	"github.com/brocaar/lorawan/band"
 )
-
-var rfRegionMapping = map[band.Name]backend.RFRegion{
-	band.AS_923:     backend.AS923,
-	band.AU_915_928: backend.Australia915,
-	band.CN_470_510: backend.China470,
-	band.CN_779_787: backend.China779,
-	band.EU_433:     backend.EU433,
-	band.EU_863_870: backend.EU868,
-	band.IN_865_867: backend.RFRegion("India865"),      // ? is not defined
-	band.KR_920_923: backend.RFRegion("SouthKorea920"), // ? is not defined
-	band.US_902_928: backend.US902,
-}
 
 // defaultCodeRate defines the default code rate
 const defaultCodeRate = "4/5"
@@ -72,15 +61,15 @@ func (n *NetworkServerAPI) CreateServiceProfile(ctx context.Context, req *ns.Cre
 		DevStatusReqFreq:       int(req.ServiceProfile.DevStatusReqFreq),
 		ReportDevStatusBattery: req.ServiceProfile.ReportDevStatusBattery,
 		ReportDevStatusMargin:  req.ServiceProfile.ReportDevStatusMargin,
-		DRMin:          int(req.ServiceProfile.DrMin),
-		DRMax:          int(req.ServiceProfile.DrMax),
-		ChannelMask:    req.ServiceProfile.ChannelMask,
-		PRAllowed:      req.ServiceProfile.PrAllowed,
-		HRAllowed:      req.ServiceProfile.HrAllowed,
-		RAAllowed:      req.ServiceProfile.RaAllowed,
-		NwkGeoLoc:      req.ServiceProfile.NwkGeoLoc,
-		TargetPER:      int(req.ServiceProfile.TargetPer),
-		MinGWDiversity: int(req.ServiceProfile.MinGwDiversity),
+		DRMin:                  int(req.ServiceProfile.DrMin),
+		DRMax:                  int(req.ServiceProfile.DrMax),
+		ChannelMask:            req.ServiceProfile.ChannelMask,
+		PRAllowed:              req.ServiceProfile.PrAllowed,
+		HRAllowed:              req.ServiceProfile.HrAllowed,
+		RAAllowed:              req.ServiceProfile.RaAllowed,
+		NwkGeoLoc:              req.ServiceProfile.NwkGeoLoc,
+		TargetPER:              int(req.ServiceProfile.TargetPer),
+		MinGWDiversity:         int(req.ServiceProfile.MinGwDiversity),
 	}
 
 	switch req.ServiceProfile.UlRatePolicy {
@@ -97,7 +86,7 @@ func (n *NetworkServerAPI) CreateServiceProfile(ctx context.Context, req *ns.Cre
 		sp.DLRatePolicy = storage.Drop
 	}
 
-	if err := storage.CreateServiceProfile(config.C.PostgreSQL.DB, &sp); err != nil {
+	if err := storage.CreateServiceProfile(storage.DB(), &sp); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -111,7 +100,7 @@ func (n *NetworkServerAPI) GetServiceProfile(ctx context.Context, req *ns.GetSer
 	var spID uuid.UUID
 	copy(spID[:], req.Id)
 
-	sp, err := storage.GetServiceProfile(config.C.PostgreSQL.DB, spID)
+	sp, err := storage.GetServiceProfile(storage.DB(), spID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -127,15 +116,15 @@ func (n *NetworkServerAPI) GetServiceProfile(ctx context.Context, req *ns.GetSer
 			DevStatusReqFreq:       uint32(sp.DevStatusReqFreq),
 			ReportDevStatusBattery: sp.ReportDevStatusBattery,
 			ReportDevStatusMargin:  sp.ReportDevStatusMargin,
-			DrMin:          uint32(sp.DRMin),
-			DrMax:          uint32(sp.DRMax),
-			ChannelMask:    sp.ChannelMask,
-			PrAllowed:      sp.PRAllowed,
-			HrAllowed:      sp.HRAllowed,
-			RaAllowed:      sp.RAAllowed,
-			NwkGeoLoc:      sp.NwkGeoLoc,
-			TargetPer:      uint32(sp.TargetPER),
-			MinGwDiversity: uint32(sp.MinGWDiversity),
+			DrMin:                  uint32(sp.DRMin),
+			DrMax:                  uint32(sp.DRMax),
+			ChannelMask:            sp.ChannelMask,
+			PrAllowed:              sp.PRAllowed,
+			HrAllowed:              sp.HRAllowed,
+			RaAllowed:              sp.RAAllowed,
+			NwkGeoLoc:              sp.NwkGeoLoc,
+			TargetPer:              uint32(sp.TargetPER),
+			MinGwDiversity:         uint32(sp.MinGWDiversity),
 		},
 	}
 
@@ -175,7 +164,7 @@ func (n *NetworkServerAPI) UpdateServiceProfile(ctx context.Context, req *ns.Upd
 	var spID uuid.UUID
 	copy(spID[:], req.ServiceProfile.Id)
 
-	sp, err := storage.GetServiceProfile(config.C.PostgreSQL.DB, spID)
+	sp, err := storage.GetServiceProfile(storage.DB(), spID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -212,11 +201,11 @@ func (n *NetworkServerAPI) UpdateServiceProfile(ctx context.Context, req *ns.Upd
 		sp.DLRatePolicy = storage.Drop
 	}
 
-	if err := storage.FlushServiceProfileCache(config.C.Redis.Pool, sp.ID); err != nil {
+	if err := storage.FlushServiceProfileCache(storage.RedisPool(), sp.ID); err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	if err := storage.UpdateServiceProfile(config.C.PostgreSQL.DB, &sp); err != nil {
+	if err := storage.UpdateServiceProfile(storage.DB(), &sp); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -228,11 +217,11 @@ func (n *NetworkServerAPI) DeleteServiceProfile(ctx context.Context, req *ns.Del
 	var spID uuid.UUID
 	copy(spID[:], req.Id)
 
-	if err := storage.FlushServiceProfileCache(config.C.Redis.Pool, spID); err != nil {
+	if err := storage.FlushServiceProfileCache(storage.RedisPool(), spID); err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	if err := storage.DeleteServiceProfile(config.C.PostgreSQL.DB, spID); err != nil {
+	if err := storage.DeleteServiceProfile(storage.DB(), spID); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -255,7 +244,7 @@ func (n *NetworkServerAPI) CreateRoutingProfile(ctx context.Context, req *ns.Cre
 		TLSCert: req.RoutingProfile.TlsCert,
 		TLSKey:  req.RoutingProfile.TlsKey,
 	}
-	if err := storage.CreateRoutingProfile(config.C.PostgreSQL.DB, &rp); err != nil {
+	if err := storage.CreateRoutingProfile(storage.DB(), &rp); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -269,7 +258,7 @@ func (n *NetworkServerAPI) GetRoutingProfile(ctx context.Context, req *ns.GetRou
 	var rpID uuid.UUID
 	copy(rpID[:], req.Id)
 
-	rp, err := storage.GetRoutingProfile(config.C.PostgreSQL.DB, rpID)
+	rp, err := storage.GetRoutingProfile(storage.DB(), rpID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -305,7 +294,7 @@ func (n *NetworkServerAPI) UpdateRoutingProfile(ctx context.Context, req *ns.Upd
 	var rpID uuid.UUID
 	copy(rpID[:], req.RoutingProfile.Id)
 
-	rp, err := storage.GetRoutingProfile(config.C.PostgreSQL.DB, rpID)
+	rp, err := storage.GetRoutingProfile(storage.DB(), rpID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -322,7 +311,7 @@ func (n *NetworkServerAPI) UpdateRoutingProfile(ctx context.Context, req *ns.Upd
 		rp.TLSKey = ""
 	}
 
-	if err := storage.UpdateRoutingProfile(config.C.PostgreSQL.DB, &rp); err != nil {
+	if err := storage.UpdateRoutingProfile(storage.DB(), &rp); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -334,7 +323,7 @@ func (n *NetworkServerAPI) DeleteRoutingProfile(ctx context.Context, req *ns.Del
 	var rpID uuid.UUID
 	copy(rpID[:], req.Id)
 
-	if err := storage.DeleteRoutingProfile(config.C.PostgreSQL.DB, rpID); err != nil {
+	if err := storage.DeleteRoutingProfile(storage.DB(), rpID); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -376,19 +365,10 @@ func (n *NetworkServerAPI) CreateDeviceProfile(ctx context.Context, req *ns.Crea
 		MaxDutyCycle:       int(req.DeviceProfile.MaxDutyCycle),
 		SupportsJoin:       req.DeviceProfile.SupportsJoin,
 		Supports32bitFCnt:  req.DeviceProfile.Supports_32BitFCnt,
+		RFRegion:           band.Band().Name(),
 	}
 
-	rfRegion, ok := rfRegionMapping[config.C.NetworkServer.Band.Name]
-	if !ok {
-		// band name has not been specified by the LoRaWAN backend interfaces
-		// specification. use the internal BandName for now so that when these
-		// values are specified in a next version, this can be fixed in a db
-		// migration
-		dp.RFRegion = string(config.C.NetworkServer.Band.Name)
-	}
-	dp.RFRegion = string(rfRegion)
-
-	if err := storage.CreateDeviceProfile(config.C.PostgreSQL.DB, &dp); err != nil {
+	if err := storage.CreateDeviceProfile(storage.DB(), &dp); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -402,7 +382,7 @@ func (n *NetworkServerAPI) GetDeviceProfile(ctx context.Context, req *ns.GetDevi
 	var dpID uuid.UUID
 	copy(dpID[:], req.Id)
 
-	dp, err := storage.GetDeviceProfile(config.C.PostgreSQL.DB, dpID)
+	dp, err := storage.GetDeviceProfile(storage.DB(), dpID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -460,7 +440,7 @@ func (n *NetworkServerAPI) UpdateDeviceProfile(ctx context.Context, req *ns.Upda
 	var dpID uuid.UUID
 	copy(dpID[:], req.DeviceProfile.Id)
 
-	dp, err := storage.GetDeviceProfile(config.C.PostgreSQL.DB, dpID)
+	dp, err := storage.GetDeviceProfile(storage.DB(), dpID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -488,22 +468,13 @@ func (n *NetworkServerAPI) UpdateDeviceProfile(ctx context.Context, req *ns.Upda
 	dp.MaxDutyCycle = int(req.DeviceProfile.MaxDutyCycle)
 	dp.SupportsJoin = req.DeviceProfile.SupportsJoin
 	dp.Supports32bitFCnt = req.DeviceProfile.Supports_32BitFCnt
+	dp.RFRegion = band.Band().Name()
 
-	rfRegion, ok := rfRegionMapping[config.C.NetworkServer.Band.Name]
-	dp.RFRegion = string(rfRegion)
-	if !ok {
-		// band name has not been specified by the LoRaWAN backend interfaces
-		// specification. use the internal BandName for now so that when these
-		// values are specified in a next version, this can be fixed in a db
-		// migration
-		dp.RFRegion = string(config.C.NetworkServer.Band.Name)
-	}
-
-	if err := storage.FlushDeviceProfileCache(config.C.Redis.Pool, dp.ID); err != nil {
+	if err := storage.FlushDeviceProfileCache(storage.RedisPool(), dp.ID); err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	if err := storage.UpdateDeviceProfile(config.C.PostgreSQL.DB, &dp); err != nil {
+	if err := storage.UpdateDeviceProfile(storage.DB(), &dp); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -515,11 +486,11 @@ func (n *NetworkServerAPI) DeleteDeviceProfile(ctx context.Context, req *ns.Dele
 	var dpID uuid.UUID
 	copy(dpID[:], req.Id)
 
-	if err := storage.FlushDeviceProfileCache(config.C.Redis.Pool, dpID); err != nil {
+	if err := storage.FlushDeviceProfileCache(storage.RedisPool(), dpID); err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	if err := storage.DeleteDeviceProfile(config.C.PostgreSQL.DB, dpID); err != nil {
+	if err := storage.DeleteDeviceProfile(storage.DB(), dpID); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -541,13 +512,14 @@ func (n *NetworkServerAPI) CreateDevice(ctx context.Context, req *ns.CreateDevic
 	copy(spID[:], req.Device.ServiceProfileId)
 
 	d := storage.Device{
-		DevEUI:           devEUI,
-		DeviceProfileID:  dpID,
-		ServiceProfileID: spID,
-		RoutingProfileID: rpID,
-		SkipFCntCheck:    req.Device.SkipFCntCheck,
+		DevEUI:            devEUI,
+		DeviceProfileID:   dpID,
+		ServiceProfileID:  spID,
+		RoutingProfileID:  rpID,
+		SkipFCntCheck:     req.Device.SkipFCntCheck,
+		ReferenceAltitude: req.Device.ReferenceAltitude,
 	}
-	if err := storage.CreateDevice(config.C.PostgreSQL.DB, &d); err != nil {
+	if err := storage.CreateDevice(storage.DB(), &d); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -559,18 +531,19 @@ func (n *NetworkServerAPI) GetDevice(ctx context.Context, req *ns.GetDeviceReque
 	var devEUI lorawan.EUI64
 	copy(devEUI[:], req.DevEui)
 
-	d, err := storage.GetDevice(config.C.PostgreSQL.DB, devEUI)
+	d, err := storage.GetDevice(storage.DB(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
 
 	resp := ns.GetDeviceResponse{
 		Device: &ns.Device{
-			DevEui:           d.DevEUI[:],
-			SkipFCntCheck:    d.SkipFCntCheck,
-			DeviceProfileId:  d.DeviceProfileID[:],
-			ServiceProfileId: d.ServiceProfileID[:],
-			RoutingProfileId: d.RoutingProfileID[:],
+			DevEui:            d.DevEUI[:],
+			SkipFCntCheck:     d.SkipFCntCheck,
+			DeviceProfileId:   d.DeviceProfileID[:],
+			ServiceProfileId:  d.ServiceProfileID[:],
+			RoutingProfileId:  d.RoutingProfileID[:],
+			ReferenceAltitude: d.ReferenceAltitude,
 		},
 	}
 
@@ -601,7 +574,7 @@ func (n *NetworkServerAPI) UpdateDevice(ctx context.Context, req *ns.UpdateDevic
 	copy(rpID[:], req.Device.RoutingProfileId)
 	copy(spID[:], req.Device.ServiceProfileId)
 
-	d, err := storage.GetDevice(config.C.PostgreSQL.DB, devEUI)
+	d, err := storage.GetDevice(storage.DB(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -610,8 +583,9 @@ func (n *NetworkServerAPI) UpdateDevice(ctx context.Context, req *ns.UpdateDevic
 	d.ServiceProfileID = spID
 	d.RoutingProfileID = rpID
 	d.SkipFCntCheck = req.Device.SkipFCntCheck
+	d.ReferenceAltitude = req.Device.ReferenceAltitude
 
-	if err := storage.UpdateDevice(config.C.PostgreSQL.DB, &d); err != nil {
+	if err := storage.UpdateDevice(storage.DB(), &d); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -623,12 +597,12 @@ func (n *NetworkServerAPI) DeleteDevice(ctx context.Context, req *ns.DeleteDevic
 	var devEUI lorawan.EUI64
 	copy(devEUI[:], req.DevEui)
 
-	err := storage.Transaction(config.C.PostgreSQL.DB, func(tx sqlx.Ext) error {
+	err := storage.Transaction(func(tx sqlx.Ext) error {
 		if err := storage.DeleteDevice(tx, devEUI); err != nil {
 			return errToRPCError(err)
 		}
 
-		if err := storage.DeleteDeviceSession(config.C.Redis.Pool, devEUI); err != nil && err != storage.ErrDoesNotExist {
+		if err := storage.DeleteDeviceSession(storage.RedisPool(), devEUI); err != nil && err != storage.ErrDoesNotExist {
 			return errToRPCError(err)
 		}
 
@@ -657,17 +631,12 @@ func (n *NetworkServerAPI) ActivateDevice(ctx context.Context, req *ns.ActivateD
 	copy(fNwkSIntKey[:], req.DeviceActivation.FNwkSIntKey)
 	copy(nwkSEncKey[:], req.DeviceActivation.NwkSEncKey)
 
-	d, err := storage.GetDevice(config.C.PostgreSQL.DB, devEUI)
+	d, err := storage.GetDevice(storage.DB(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	sp, err := storage.GetServiceProfile(config.C.PostgreSQL.DB, d.ServiceProfileID)
-	if err != nil {
-		return nil, errToRPCError(err)
-	}
-
-	dp, err := storage.GetDeviceProfile(config.C.PostgreSQL.DB, d.DeviceProfileID)
+	dp, err := storage.GetDeviceProfile(storage.DB(), d.DeviceProfileID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -687,24 +656,34 @@ func (n *NetworkServerAPI) ActivateDevice(ctx context.Context, req *ns.ActivateD
 		AFCntDown:          req.DeviceActivation.AFCntDown,
 		SkipFCntValidation: req.DeviceActivation.SkipFCntCheck || d.SkipFCntCheck,
 
-		RXWindow:       storage.RX1,
-		MaxSupportedDR: sp.DRMax,
+		RXWindow: storage.RX1,
 
 		MACVersion: dp.MACVersion,
+	}
+
+	// The device is never set to DeviceModeB because the device first needs to
+	// aquire a Class-B beacon lock and will signal this to the network-server.
+	if dp.SupportsClassC {
+		d.Mode = storage.DeviceModeC
+	} else {
+		d.Mode = storage.DeviceModeA
+	}
+	if err := storage.UpdateDevice(storage.DB(), &d); err != nil {
+		return nil, errToRPCError(err)
 	}
 
 	// reset the device-session to the device boot parameters
 	ds.ResetToBootParameters(dp)
 
-	if err := storage.SaveDeviceSession(config.C.Redis.Pool, ds); err != nil {
+	if err := storage.SaveDeviceSession(storage.RedisPool(), ds); err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	if err := storage.FlushDeviceQueueForDevEUI(config.C.PostgreSQL.DB, d.DevEUI); err != nil {
+	if err := storage.FlushDeviceQueueForDevEUI(storage.DB(), d.DevEUI); err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	if err := storage.FlushMACCommandQueue(config.C.Redis.Pool, ds.DevEUI); err != nil {
+	if err := storage.FlushMACCommandQueue(storage.RedisPool(), ds.DevEUI); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -716,11 +695,11 @@ func (n *NetworkServerAPI) DeactivateDevice(ctx context.Context, req *ns.Deactiv
 	var devEUI lorawan.EUI64
 	copy(devEUI[:], req.DevEui)
 
-	if err := storage.DeleteDeviceSession(config.C.Redis.Pool, devEUI); err != nil {
+	if err := storage.DeleteDeviceSession(storage.RedisPool(), devEUI); err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	if err := storage.FlushDeviceQueueForDevEUI(config.C.PostgreSQL.DB, devEUI); err != nil {
+	if err := storage.FlushDeviceQueueForDevEUI(storage.DB(), devEUI); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -732,7 +711,7 @@ func (n *NetworkServerAPI) GetDeviceActivation(ctx context.Context, req *ns.GetD
 	var devEUI lorawan.EUI64
 	copy(devEUI[:], req.DevEui)
 
-	ds, err := storage.GetDeviceSession(config.C.Redis.Pool, devEUI)
+	ds, err := storage.GetDeviceSession(storage.RedisPool(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -754,7 +733,7 @@ func (n *NetworkServerAPI) GetDeviceActivation(ctx context.Context, req *ns.GetD
 
 // GetRandomDevAddr returns a random DevAddr.
 func (n *NetworkServerAPI) GetRandomDevAddr(ctx context.Context, req *empty.Empty) (*ns.GetRandomDevAddrResponse, error) {
-	devAddr, err := storage.GetRandomDevAddr(config.C.Redis.Pool, config.C.NetworkServer.NetID)
+	devAddr, err := storage.GetRandomDevAddr(storage.RedisPool(), config.C.NetworkServer.NetID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -786,7 +765,7 @@ func (n *NetworkServerAPI) CreateMACCommandQueueItem(ctx context.Context, req *n
 		MACCommands: commands,
 	}
 
-	if err := storage.CreateMACCommandQueueItem(config.C.Redis.Pool, devEUI, block); err != nil {
+	if err := storage.CreateMACCommandQueueItem(storage.RedisPool(), devEUI, block); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -796,16 +775,16 @@ func (n *NetworkServerAPI) CreateMACCommandQueueItem(ctx context.Context, req *n
 // SendProprietaryPayload send a payload using the 'Proprietary' LoRaWAN message-type.
 func (n *NetworkServerAPI) SendProprietaryPayload(ctx context.Context, req *ns.SendProprietaryPayloadRequest) (*empty.Empty, error) {
 	var mic lorawan.MIC
-	var gwMACs []lorawan.EUI64
+	var gwIDs []lorawan.EUI64
 
 	copy(mic[:], req.Mic)
 	for i := range req.GatewayMacs {
-		var mac lorawan.EUI64
-		copy(mac[:], req.GatewayMacs[i])
-		gwMACs = append(gwMACs, mac)
+		var id lorawan.EUI64
+		copy(id[:], req.GatewayMacs[i])
+		gwIDs = append(gwIDs, id)
 	}
 
-	err := proprietarydown.Handle(req.MacPayload, mic, gwMACs, req.PolarizationInversion, int(req.Frequency), int(req.Dr))
+	err := proprietarydown.Handle(req.MacPayload, mic, gwIDs, req.PolarizationInversion, int(req.Frequency), int(req.Dr))
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -823,26 +802,50 @@ func (n *NetworkServerAPI) CreateGateway(ctx context.Context, req *ns.CreateGate
 		return nil, grpc.Errorf(codes.InvalidArgument, "gateway.location must not be nil")
 	}
 
-	var mac lorawan.EUI64
-	var gpID uuid.UUID
-	copy(mac[:], req.Gateway.Id)
-	copy(gpID[:], req.Gateway.GatewayProfileId)
-
 	gw := storage.Gateway{
-		MAC: mac,
 		Location: storage.GPSPoint{
 			Latitude:  req.Gateway.Location.Latitude,
 			Longitude: req.Gateway.Location.Longitude,
 		},
 		Altitude: req.Gateway.Location.Altitude,
 	}
-	if len(req.Gateway.GatewayProfileId) != 0 {
+
+	// Gateway ID
+	copy(gw.GatewayID[:], req.Gateway.Id)
+
+	// Gateway-profile ID.
+	if b := req.Gateway.GatewayProfileId; len(b) != 0 {
+		var gpID uuid.UUID
+		copy(gpID[:], b)
 		gw.GatewayProfileID = &gpID
 	}
 
-	err := storage.CreateGateway(config.C.PostgreSQL.DB, &gw)
+	for _, board := range req.Gateway.Boards {
+		var gwBoard storage.GatewayBoard
+
+		if b := board.FpgaId; len(b) != 0 {
+			var fpgaID lorawan.EUI64
+			copy(fpgaID[:], b)
+			gwBoard.FPGAID = &fpgaID
+		}
+
+		if b := board.FineTimestampKey; len(b) != 0 {
+			var key lorawan.AES128Key
+			copy(key[:], b)
+			gwBoard.FineTimestampKey = &key
+		}
+
+		gw.Boards = append(gw.Boards, gwBoard)
+	}
+
+	err := storage.Transaction(func(tx sqlx.Ext) error {
+		if err := storage.CreateGateway(tx, &gw); err != nil {
+			return errToRPCError(err)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, errToRPCError(err)
+		return nil, err
 	}
 
 	return &empty.Empty{}, nil
@@ -850,15 +853,54 @@ func (n *NetworkServerAPI) CreateGateway(ctx context.Context, req *ns.CreateGate
 
 // GetGateway returns data for a particular gateway.
 func (n *NetworkServerAPI) GetGateway(ctx context.Context, req *ns.GetGatewayRequest) (*ns.GetGatewayResponse, error) {
-	var mac lorawan.EUI64
-	copy(mac[:], req.Id)
+	var id lorawan.EUI64
+	copy(id[:], req.Id)
 
-	gw, err := storage.GetGateway(config.C.PostgreSQL.DB, mac)
+	gw, err := storage.GetGateway(storage.DB(), id)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	return gwToResp(gw), nil
+	resp := ns.GetGatewayResponse{
+		Gateway: &ns.Gateway{
+			Id: gw.GatewayID[:],
+			Location: &common.Location{
+				Latitude:  gw.Location.Latitude,
+				Longitude: gw.Location.Longitude,
+				Altitude:  gw.Altitude,
+			},
+		},
+	}
+
+	resp.CreatedAt, _ = ptypes.TimestampProto(gw.CreatedAt)
+	resp.UpdatedAt, _ = ptypes.TimestampProto(gw.UpdatedAt)
+
+	if gw.GatewayProfileID != nil {
+		resp.Gateway.GatewayProfileId = gw.GatewayProfileID.Bytes()
+	}
+
+	if gw.FirstSeenAt != nil {
+		resp.FirstSeenAt, _ = ptypes.TimestampProto(*gw.FirstSeenAt)
+	}
+
+	if gw.LastSeenAt != nil {
+		resp.LastSeenAt, _ = ptypes.TimestampProto(*gw.LastSeenAt)
+	}
+
+	for i := range gw.Boards {
+		var gwBoard ns.GatewayBoard
+		if gw.Boards[i].FPGAID != nil {
+			gwBoard.FpgaId = gw.Boards[i].FPGAID[:]
+		}
+
+		if gw.Boards[i].FineTimestampKey != nil {
+			gwBoard.FineTimestampKey = gw.Boards[i].FineTimestampKey[:]
+		}
+
+		resp.Gateway.Boards = append(resp.Gateway.Boards, &gwBoard)
+	}
+
+	return &resp, nil
 }
 
 // UpdateGateway updates an existing gateway.
@@ -871,18 +913,18 @@ func (n *NetworkServerAPI) UpdateGateway(ctx context.Context, req *ns.UpdateGate
 		return nil, grpc.Errorf(codes.InvalidArgument, "gateway.location must not be nil")
 	}
 
-	var mac lorawan.EUI64
-	var gpID uuid.UUID
+	var id lorawan.EUI64
+	copy(id[:], req.Gateway.Id)
 
-	copy(mac[:], req.Gateway.Id)
-	copy(gpID[:], req.Gateway.GatewayProfileId)
-
-	gw, err := storage.GetGateway(config.C.PostgreSQL.DB, mac)
+	gw, err := storage.GetGateway(storage.DB(), id)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	if len(req.Gateway.GatewayProfileId) != 0 {
+	// Gateway-profile ID.
+	if b := req.Gateway.GatewayProfileId; len(b) != 0 {
+		var gpID uuid.UUID
+		copy(gpID[:], b)
 		gw.GatewayProfileID = &gpID
 	} else {
 		gw.GatewayProfileID = nil
@@ -894,9 +936,37 @@ func (n *NetworkServerAPI) UpdateGateway(ctx context.Context, req *ns.UpdateGate
 	}
 	gw.Altitude = req.Gateway.Location.Altitude
 
-	err = storage.UpdateGateway(config.C.PostgreSQL.DB, &gw)
-	if err != nil {
+	gw.Boards = nil
+	for _, board := range req.Gateway.Boards {
+		var gwBoard storage.GatewayBoard
+
+		if b := board.FpgaId; len(b) != 0 {
+			var fpgaID lorawan.EUI64
+			copy(fpgaID[:], b)
+			gwBoard.FPGAID = &fpgaID
+		}
+
+		if b := board.FineTimestampKey; len(b) != 0 {
+			var key lorawan.AES128Key
+			copy(key[:], b)
+			gwBoard.FineTimestampKey = &key
+		}
+
+		gw.Boards = append(gw.Boards, gwBoard)
+	}
+
+	if err = storage.FlushGatewayCache(storage.RedisPool(), gw.GatewayID); err != nil {
 		return nil, errToRPCError(err)
+	}
+
+	err = storage.Transaction(func(tx sqlx.Ext) error {
+		if err = storage.UpdateGateway(tx, &gw); err != nil {
+			return errToRPCError(err)
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
 	}
 
 	return &empty.Empty{}, nil
@@ -904,11 +974,14 @@ func (n *NetworkServerAPI) UpdateGateway(ctx context.Context, req *ns.UpdateGate
 
 // DeleteGateway deletes a gateway.
 func (n *NetworkServerAPI) DeleteGateway(ctx context.Context, req *ns.DeleteGatewayRequest) (*empty.Empty, error) {
-	var mac lorawan.EUI64
-	copy(mac[:], req.Id)
+	var id lorawan.EUI64
+	copy(id[:], req.Id)
 
-	err := storage.DeleteGateway(config.C.PostgreSQL.DB, mac)
-	if err != nil {
+	if err := storage.FlushGatewayCache(storage.RedisPool(), id); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	if err := storage.DeleteGateway(storage.DB(), id); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -917,8 +990,7 @@ func (n *NetworkServerAPI) DeleteGateway(ctx context.Context, req *ns.DeleteGate
 
 // GetGatewayStats returns stats of an existing gateway.
 func (n *NetworkServerAPI) GetGatewayStats(ctx context.Context, req *ns.GetGatewayStatsRequest) (*ns.GetGatewayStatsResponse, error) {
-	var mac lorawan.EUI64
-	copy(mac[:], req.GatewayId)
+	gatewayID := helpers.GetGatewayID(req)
 
 	start, err := ptypes.Timestamp(req.StartTimestamp)
 	if err != nil {
@@ -930,22 +1002,22 @@ func (n *NetworkServerAPI) GetGatewayStats(ctx context.Context, req *ns.GetGatew
 		return nil, grpc.Errorf(codes.InvalidArgument, err.Error())
 	}
 
-	stats, err := storage.GetGatewayStats(config.C.PostgreSQL.DB, mac, req.Interval.String(), start, end)
+	metrics, err := storage.GetMetrics(storage.RedisPool(), storage.AggregationInterval(req.Interval.String()), "gw:"+gatewayID.String(), start, end)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
 
 	var resp ns.GetGatewayStatsResponse
 
-	for _, stat := range stats {
+	for _, m := range metrics {
 		row := ns.GatewayStats{
-			RxPacketsReceived:   int32(stat.RXPacketsReceived),
-			RxPacketsReceivedOk: int32(stat.RXPacketsReceivedOK),
-			TxPacketsReceived:   int32(stat.TXPacketsReceived),
-			TxPacketsEmitted:    int32(stat.TXPacketsEmitted),
+			RxPacketsReceived:   int32(m.Metrics["rx_count"]),
+			RxPacketsReceivedOk: int32(m.Metrics["rx_ok_count"]),
+			TxPacketsReceived:   int32(m.Metrics["tx_count"]),
+			TxPacketsEmitted:    int32(m.Metrics["tx_ok_count"]),
 		}
 
-		row.Timestamp, err = ptypes.TimestampProto(stat.Timestamp)
+		row.Timestamp, err = ptypes.TimestampProto(m.Time)
 		if err != nil {
 			return nil, errToRPCError(err)
 		}
@@ -959,11 +1031,11 @@ func (n *NetworkServerAPI) GetGatewayStats(ctx context.Context, req *ns.GetGatew
 // StreamFrameLogsForGateway returns a stream of frames seen by the given gateway.
 func (n *NetworkServerAPI) StreamFrameLogsForGateway(req *ns.StreamFrameLogsForGatewayRequest, srv ns.NetworkServerService_StreamFrameLogsForGatewayServer) error {
 	frameLogChan := make(chan framelog.FrameLog)
-	var mac lorawan.EUI64
-	copy(mac[:], req.GatewayId)
+	var id lorawan.EUI64
+	copy(id[:], req.GatewayId)
 
 	go func() {
-		err := framelog.GetFrameLogForGateway(srv.Context(), mac, frameLogChan)
+		err := framelog.GetFrameLogForGateway(srv.Context(), storage.RedisPool(), id, frameLogChan)
 		if err != nil {
 			log.WithError(err).Error("get frame-log for gateway error")
 		}
@@ -1000,7 +1072,7 @@ func (n *NetworkServerAPI) StreamFrameLogsForDevice(req *ns.StreamFrameLogsForDe
 	copy(devEUI[:], req.DevEui)
 
 	go func() {
-		err := framelog.GetFrameLogForDevice(srv.Context(), devEUI, frameLogChan)
+		err := framelog.GetFrameLogForDevice(srv.Context(), storage.RedisPool(), devEUI, frameLogChan)
 		if err != nil {
 			log.WithError(err).Error("get frame-log for device error")
 		}
@@ -1068,7 +1140,7 @@ func (n *NetworkServerAPI) CreateGatewayProfile(ctx context.Context, req *ns.Cre
 		gc.ExtraChannels = append(gc.ExtraChannels, c)
 	}
 
-	err := storage.Transaction(config.C.PostgreSQL.DB, func(tx sqlx.Ext) error {
+	err := storage.Transaction(func(tx sqlx.Ext) error {
 		return storage.CreateGatewayProfile(tx, &gc)
 	})
 	if err != nil {
@@ -1083,7 +1155,7 @@ func (n *NetworkServerAPI) GetGatewayProfile(ctx context.Context, req *ns.GetGat
 	var gpID uuid.UUID
 	copy(gpID[:], req.Id)
 
-	gc, err := storage.GetGatewayProfile(config.C.PostgreSQL.DB, gpID)
+	gc, err := storage.GetGatewayProfile(storage.DB(), gpID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -1141,7 +1213,7 @@ func (n *NetworkServerAPI) UpdateGatewayProfile(ctx context.Context, req *ns.Upd
 	var gpID uuid.UUID
 	copy(gpID[:], req.GatewayProfile.Id)
 
-	gc, err := storage.GetGatewayProfile(config.C.PostgreSQL.DB, gpID)
+	gc, err := storage.GetGatewayProfile(storage.DB(), gpID)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -1173,7 +1245,7 @@ func (n *NetworkServerAPI) UpdateGatewayProfile(ctx context.Context, req *ns.Upd
 		gc.ExtraChannels = append(gc.ExtraChannels, c)
 	}
 
-	err = storage.Transaction(config.C.PostgreSQL.DB, func(tx sqlx.Ext) error {
+	err = storage.Transaction(func(tx sqlx.Ext) error {
 		return storage.UpdateGatewayProfile(tx, &gc)
 	})
 	if err != nil {
@@ -1188,7 +1260,7 @@ func (n *NetworkServerAPI) DeleteGatewayProfile(ctx context.Context, req *ns.Del
 	var gpID uuid.UUID
 	copy(gpID[:], req.Id)
 
-	if err := storage.DeleteGatewayProfile(config.C.PostgreSQL.DB, gpID); err != nil {
+	if err := storage.DeleteGatewayProfile(storage.DB(), gpID); err != nil {
 		return nil, errToRPCError(err)
 	}
 
@@ -1204,17 +1276,30 @@ func (n *NetworkServerAPI) CreateDeviceQueueItem(ctx context.Context, req *ns.Cr
 	var devEUI lorawan.EUI64
 	copy(devEUI[:], req.Item.DevEui)
 
-	d, err := storage.GetDevice(config.C.PostgreSQL.DB, devEUI)
+	d, err := storage.GetDevice(storage.DB(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
 
-	dp, err := storage.GetDeviceProfile(config.C.PostgreSQL.DB, d.DeviceProfileID)
+	dp, err := storage.GetAndCacheDeviceProfile(storage.DB(), storage.RedisPool(), d.DeviceProfileID)
 	if err != nil {
 		return nil, errToRPCError(err)
+	}
+
+	ds, err := storage.GetDeviceSession(storage.RedisPool(), d.DevEUI)
+	if err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	var devAddr lorawan.DevAddr
+	copy(devAddr[:], req.Item.DevAddr)
+
+	if (devAddr != lorawan.DevAddr{0, 0, 0, 0} && ds.DevAddr != devAddr) {
+		return nil, grpc.Errorf(codes.InvalidArgument, "device security-context out of sync")
 	}
 
 	qi := storage.DeviceQueueItem{
+		DevAddr:    devAddr,
 		DevEUI:     d.DevEUI,
 		FRMPayload: req.Item.FrmPayload,
 		FCnt:       req.Item.FCnt,
@@ -1226,13 +1311,8 @@ func (n *NetworkServerAPI) CreateDeviceQueueItem(ctx context.Context, req *ns.Cr
 	// the next ping-slot.
 	if dp.SupportsClassB {
 		// check if device is currently active and is operating in Class-B mode
-		ds, err := storage.GetDeviceSession(config.C.Redis.Pool, d.DevEUI)
-		if err != nil && err != storage.ErrDoesNotExist {
-			return nil, errToRPCError(err)
-		}
-
 		if err == nil && ds.BeaconLocked {
-			scheduleAfterGPSEpochTS, err := storage.GetMaxEmitAtTimeSinceGPSEpochForDevEUI(config.C.PostgreSQL.DB, d.DevEUI)
+			scheduleAfterGPSEpochTS, err := storage.GetMaxEmitAtTimeSinceGPSEpochForDevEUI(storage.DB(), d.DevEUI)
 			if err != nil {
 				return nil, errToRPCError(err)
 			}
@@ -1255,7 +1335,7 @@ func (n *NetworkServerAPI) CreateDeviceQueueItem(ctx context.Context, req *ns.Cr
 		}
 	}
 
-	err = storage.CreateDeviceQueueItem(config.C.PostgreSQL.DB, &qi)
+	err = storage.CreateDeviceQueueItem(storage.DB(), &qi)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -1268,7 +1348,7 @@ func (n *NetworkServerAPI) FlushDeviceQueueForDevEUI(ctx context.Context, req *n
 	var devEUI lorawan.EUI64
 	copy(devEUI[:], req.DevEui)
 
-	err := storage.FlushDeviceQueueForDevEUI(config.C.PostgreSQL.DB, devEUI)
+	err := storage.FlushDeviceQueueForDevEUI(storage.DB(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -1281,7 +1361,7 @@ func (n *NetworkServerAPI) GetDeviceQueueItemsForDevEUI(ctx context.Context, req
 	var devEUI lorawan.EUI64
 	copy(devEUI[:], req.DevEui)
 
-	items, err := storage.GetDeviceQueueItemsForDevEUI(config.C.PostgreSQL.DB, devEUI)
+	items, err := storage.GetDeviceQueueItemsForDevEUI(storage.DB(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -1289,6 +1369,7 @@ func (n *NetworkServerAPI) GetDeviceQueueItemsForDevEUI(ctx context.Context, req
 	var out ns.GetDeviceQueueItemsForDevEUIResponse
 	for i := range items {
 		qi := ns.DeviceQueueItem{
+			DevAddr:    items[i].DevAddr[:],
 			DevEui:     items[i].DevEUI[:],
 			FrmPayload: items[i].FRMPayload,
 			FCnt:       items[i].FCnt,
@@ -1312,7 +1393,7 @@ func (n *NetworkServerAPI) GetNextDownlinkFCntForDevEUI(ctx context.Context, req
 
 	copy(devEUI[:], req.DevEui)
 
-	ds, err := storage.GetDeviceSession(config.C.Redis.Pool, devEUI)
+	ds, err := storage.GetDeviceSession(storage.RedisPool(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -1323,7 +1404,7 @@ func (n *NetworkServerAPI) GetNextDownlinkFCntForDevEUI(ctx context.Context, req
 		resp.FCnt = ds.AFCntDown
 	}
 
-	items, err := storage.GetDeviceQueueItemsForDevEUI(config.C.PostgreSQL.DB, devEUI)
+	items, err := storage.GetDeviceQueueItemsForDevEUI(storage.DB(), devEUI)
 	if err != nil {
 		return nil, errToRPCError(err)
 	}
@@ -1334,24 +1415,262 @@ func (n *NetworkServerAPI) GetNextDownlinkFCntForDevEUI(ctx context.Context, req
 	return &resp, nil
 }
 
+// CreateMulticastGroup creates the given multicast-group.
+func (n *NetworkServerAPI) CreateMulticastGroup(ctx context.Context, req *ns.CreateMulticastGroupRequest) (*ns.CreateMulticastGroupResponse, error) {
+	if req.MulticastGroup == nil {
+		return nil, grpc.Errorf(codes.InvalidArgument, "multicast_group must not be nil")
+	}
+
+	mg := storage.MulticastGroup{
+		FCnt:           req.MulticastGroup.FCnt,
+		DR:             int(req.MulticastGroup.Dr),
+		Frequency:      int(req.MulticastGroup.Frequency),
+		PingSlotPeriod: int(req.MulticastGroup.PingSlotPeriod),
+	}
+
+	switch req.MulticastGroup.GroupType {
+	case ns.MulticastGroupType_CLASS_B:
+		mg.GroupType = storage.MulticastGroupB
+	case ns.MulticastGroupType_CLASS_C:
+		mg.GroupType = storage.MulticastGroupC
+	default:
+		return nil, grpc.Errorf(codes.InvalidArgument, "invalid group_type")
+	}
+
+	copy(mg.ID[:], req.MulticastGroup.Id)
+	copy(mg.MCAddr[:], req.MulticastGroup.McAddr)
+	copy(mg.MCNwkSKey[:], req.MulticastGroup.McNwkSKey)
+	copy(mg.ServiceProfileID[:], req.MulticastGroup.ServiceProfileId)
+	copy(mg.RoutingProfileID[:], req.MulticastGroup.RoutingProfileId)
+
+	if err := storage.CreateMulticastGroup(storage.DB(), &mg); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &ns.CreateMulticastGroupResponse{
+		Id: mg.ID.Bytes(),
+	}, nil
+}
+
+// GetMulticastGroup returns the multicast-group given an id.
+func (n *NetworkServerAPI) GetMulticastGroup(ctx context.Context, req *ns.GetMulticastGroupRequest) (*ns.GetMulticastGroupResponse, error) {
+	var mgID uuid.UUID
+	copy(mgID[:], req.Id)
+
+	mg, err := storage.GetMulticastGroup(storage.DB(), mgID, false)
+	if err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	resp := ns.GetMulticastGroupResponse{
+		MulticastGroup: &ns.MulticastGroup{
+			Id:               mg.ID.Bytes(),
+			McAddr:           mg.MCAddr[:],
+			McNwkSKey:        mg.MCNwkSKey[:],
+			FCnt:             mg.FCnt,
+			Dr:               uint32(mg.DR),
+			Frequency:        uint32(mg.Frequency),
+			PingSlotPeriod:   uint32(mg.PingSlotPeriod),
+			ServiceProfileId: mg.ServiceProfileID.Bytes(),
+			RoutingProfileId: mg.RoutingProfileID.Bytes(),
+		},
+	}
+
+	switch mg.GroupType {
+	case storage.MulticastGroupB:
+		resp.MulticastGroup.GroupType = ns.MulticastGroupType_CLASS_B
+	case storage.MulticastGroupC:
+		resp.MulticastGroup.GroupType = ns.MulticastGroupType_CLASS_C
+	default:
+		return nil, grpc.Errorf(codes.Internal, "invalid group-type: %s", mg.GroupType)
+	}
+
+	resp.CreatedAt, err = ptypes.TimestampProto(mg.CreatedAt)
+	if err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	resp.UpdatedAt, err = ptypes.TimestampProto(mg.UpdatedAt)
+	if err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &resp, nil
+}
+
+// UpdateMulticastGroup updates the given multicast-group.
+func (n *NetworkServerAPI) UpdateMulticastGroup(ctx context.Context, req *ns.UpdateMulticastGroupRequest) (*empty.Empty, error) {
+	if req.MulticastGroup == nil {
+		return nil, grpc.Errorf(codes.InvalidArgument, "multicast_group must not be nil")
+	}
+
+	var mgID uuid.UUID
+	copy(mgID[:], req.MulticastGroup.Id)
+
+	err := storage.Transaction(func(tx sqlx.Ext) error {
+		mg, err := storage.GetMulticastGroup(tx, mgID, true)
+		if err != nil {
+			return errToRPCError(err)
+		}
+
+		copy(mg.MCAddr[:], req.MulticastGroup.McAddr)
+		copy(mg.MCNwkSKey[:], req.MulticastGroup.McNwkSKey)
+		copy(mg.ServiceProfileID[:], req.MulticastGroup.ServiceProfileId)
+		copy(mg.RoutingProfileID[:], req.MulticastGroup.RoutingProfileId)
+		mg.FCnt = req.MulticastGroup.FCnt
+		mg.DR = int(req.MulticastGroup.Dr)
+		mg.Frequency = int(req.MulticastGroup.Frequency)
+		mg.PingSlotPeriod = int(req.MulticastGroup.PingSlotPeriod)
+
+		switch req.MulticastGroup.GroupType {
+		case ns.MulticastGroupType_CLASS_B:
+			mg.GroupType = storage.MulticastGroupB
+		case ns.MulticastGroupType_CLASS_C:
+			mg.GroupType = storage.MulticastGroupC
+		default:
+			return grpc.Errorf(codes.InvalidArgument, "invalid group_type")
+		}
+
+		if err := storage.UpdateMulticastGroup(tx, &mg); err != nil {
+			return errToRPCError(err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return &empty.Empty{}, nil
+}
+
+// DeleteMulticastGroup deletes a multicast-group given an id.
+func (n *NetworkServerAPI) DeleteMulticastGroup(ctx context.Context, req *ns.DeleteMulticastGroupRequest) (*empty.Empty, error) {
+	var mgID uuid.UUID
+	copy(mgID[:], req.Id)
+
+	if err := storage.DeleteMulticastGroup(storage.DB(), mgID); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
+// AddDeviceToMulticastGroup adds the given device to the given multicast-group.
+func (n *NetworkServerAPI) AddDeviceToMulticastGroup(ctx context.Context, req *ns.AddDeviceToMulticastGroupRequest) (*empty.Empty, error) {
+	var devEUI lorawan.EUI64
+	var mgID uuid.UUID
+	copy(devEUI[:], req.DevEui)
+	copy(mgID[:], req.MulticastGroupId)
+
+	if err := storage.AddDeviceToMulticastGroup(storage.DB(), devEUI, mgID); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
+// RemoveDeviceFromMulticastGroup removes the given device from the given multicast-group.
+func (n *NetworkServerAPI) RemoveDeviceFromMulticastGroup(ctx context.Context, req *ns.RemoveDeviceFromMulticastGroupRequest) (*empty.Empty, error) {
+	var devEUI lorawan.EUI64
+	var mgID uuid.UUID
+	copy(devEUI[:], req.DevEui)
+	copy(mgID[:], req.MulticastGroupId)
+
+	if err := storage.RemoveDeviceFromMulticastGroup(storage.DB(), devEUI, mgID); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
+// EnqueueMulticastQueueItem creates the given multicast queue-item.
+func (n *NetworkServerAPI) EnqueueMulticastQueueItem(ctx context.Context, req *ns.EnqueueMulticastQueueItemRequest) (*empty.Empty, error) {
+	if req.MulticastQueueItem == nil {
+		return nil, grpc.Errorf(codes.InvalidArgument, "multicast_queue_item must not be nil")
+	}
+
+	var mgID uuid.UUID
+	copy(mgID[:], req.MulticastQueueItem.MulticastGroupId)
+
+	qi := storage.MulticastQueueItem{
+		MulticastGroupID: mgID,
+		FCnt:             req.MulticastQueueItem.FCnt,
+		FPort:            uint8(req.MulticastQueueItem.FPort),
+		FRMPayload:       req.MulticastQueueItem.FrmPayload,
+	}
+
+	err := storage.Transaction(func(tx sqlx.Ext) error {
+		return multicast.EnqueueQueueItem(storage.RedisPool(), tx, qi)
+	})
+	if err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
+// FlushMulticastQueueForMulticastGroup flushes the multicast device-queue given a multicast-group id.
+func (n *NetworkServerAPI) FlushMulticastQueueForMulticastGroup(ctx context.Context, req *ns.FlushMulticastQueueForMulticastGroupRequest) (*empty.Empty, error) {
+	var mgID uuid.UUID
+	copy(mgID[:], req.MulticastGroupId)
+
+	if err := storage.FlushMulticastQueueForMulticastGroup(storage.DB(), mgID); err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	return &empty.Empty{}, nil
+}
+
+// GetMulticastQueueItemsForMulticastGroup returns the queue-items given a multicast-group id.
+func (n *NetworkServerAPI) GetMulticastQueueItemsForMulticastGroup(ctx context.Context, req *ns.GetMulticastQueueItemsForMulticastGroupRequest) (*ns.GetMulticastQueueItemsForMulticastGroupResponse, error) {
+	var mgID uuid.UUID
+	copy(mgID[:], req.MulticastGroupId)
+
+	items, err := storage.GetMulticastQueueItemsForMulticastGroup(storage.DB(), mgID)
+	if err != nil {
+		return nil, errToRPCError(err)
+	}
+
+	counterSeen := make(map[uint32]struct{})
+	var out ns.GetMulticastQueueItemsForMulticastGroupResponse
+	for i := range items {
+		// we need to de-duplicate the queue-items as they are created per-gateway
+		if _, seen := counterSeen[items[i].FCnt]; seen {
+			continue
+		}
+
+		qi := ns.MulticastQueueItem{
+			MulticastGroupId: items[i].MulticastGroupID.Bytes(),
+			FrmPayload:       items[i].FRMPayload,
+			FCnt:             items[i].FCnt,
+			FPort:            uint32(items[i].FPort),
+		}
+		counterSeen[items[i].FCnt] = struct{}{}
+		out.MulticastQueueItems = append(out.MulticastQueueItems, &qi)
+	}
+
+	return &out, nil
+}
+
 // GetVersion returns the LoRa Server version.
 func (n *NetworkServerAPI) GetVersion(ctx context.Context, req *empty.Empty) (*ns.GetVersionResponse, error) {
-	region, ok := map[band.Name]common.Region{
-		band.AS_923:     common.Region_AS923,
-		band.AU_915_928: common.Region_AU915,
-		band.CN_470_510: common.Region_CN470,
-		band.CN_779_787: common.Region_CN779,
-		band.EU_433:     common.Region_EU433,
-		band.EU_863_870: common.Region_EU868,
-		band.IN_865_867: common.Region_IN865,
-		band.KR_920_923: common.Region_KR920,
-		band.RU_864_870: common.Region_RU864,
-		band.US_902_928: common.Region_US915,
-	}[config.C.NetworkServer.Band.Name]
+	region, ok := map[string]common.Region{
+		common.Region_AS923.String(): common.Region_AS923,
+		common.Region_AU915.String(): common.Region_AU915,
+		common.Region_CN470.String(): common.Region_CN470,
+		common.Region_CN779.String(): common.Region_CN779,
+		common.Region_EU433.String(): common.Region_EU433,
+		common.Region_EU868.String(): common.Region_EU868,
+		common.Region_IN865.String(): common.Region_IN865,
+		common.Region_KR920.String(): common.Region_KR920,
+		common.Region_RU864.String(): common.Region_RU864,
+		common.Region_US915.String(): common.Region_US915,
+	}[band.Band().Name()]
 
 	if !ok {
 		log.WithFields(log.Fields{
-			"band_name": config.C.NetworkServer.Band.Name,
+			"band_name": band.Band().Name(),
 		}).Warning("unknown band to common name mapping")
 	}
 
@@ -1359,35 +1678,4 @@ func (n *NetworkServerAPI) GetVersion(ctx context.Context, req *empty.Empty) (*n
 		Region:  region,
 		Version: config.Version,
 	}, nil
-}
-
-func gwToResp(gw storage.Gateway) *ns.GetGatewayResponse {
-
-	resp := ns.GetGatewayResponse{
-		Gateway: &ns.Gateway{
-			Id: gw.MAC[:],
-			Location: &gwPB.Location{
-				Latitude:  gw.Location.Latitude,
-				Longitude: gw.Location.Longitude,
-				Altitude:  gw.Altitude,
-			},
-		},
-	}
-
-	resp.CreatedAt, _ = ptypes.TimestampProto(gw.CreatedAt)
-	resp.UpdatedAt, _ = ptypes.TimestampProto(gw.UpdatedAt)
-
-	if gw.FirstSeenAt != nil {
-		resp.FirstSeenAt, _ = ptypes.TimestampProto(*gw.FirstSeenAt)
-	}
-
-	if gw.LastSeenAt != nil {
-		resp.LastSeenAt, _ = ptypes.TimestampProto(*gw.LastSeenAt)
-	}
-
-	if gw.GatewayProfileID != nil {
-		resp.Gateway.GatewayProfileId = gw.GatewayProfileID.Bytes()
-	}
-
-	return &resp
 }

@@ -4,6 +4,8 @@ menu:
     main:
         parent: overview
         weight: 2
+toc: false
+description: Pre-compiled binaries for Windows, MacOS and Linux (tarball and Debian / Ubuntu packages).
 ---
 
 # Downloads
@@ -24,38 +26,29 @@ menu:
 
 ## Debian / Ubuntu packages
 
-| File name                                                                                                                         | OS      | Arch  |
-| ----------------------------------------------------------------------------------------------------------------------------------| ------- | ----- |
-| [loraserver_{{< version >}}_i386.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_i386.deb)   | Linux   | 386   |
-| [loraserver_{{< version >}}_amd64.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_amd64.deb) | Linux   | amd64 |
-| [loraserver_{{< version >}}_armhf.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_armhf.deb) | Linux   | arm   |
-| [loraserver_{{< version >}}_arm64.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_arm64.deb) | Linux   | arm64 |
+| File name                                                                                                                                     | OS      | Arch  |
+| ----------------------------------------------------------------------------------------------------------------------------------------------| ------- | ----- |
+| [loraserver_{{< version >}}_linux_386.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_linux_386.deb)     | Linux   | 386   |
+| [loraserver_{{< version >}}_linux_amd64.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_linux_amd64.deb) | Linux   | amd64 |
+| [loraserver_{{< version >}}_linux_armv5.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_linux_armv5.deb) | Linux   | arm   |
+| [loraserver_{{< version >}}_linux_armv6.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_linux_armv6.deb) | Linux   | arm   |
+| [loraserver_{{< version >}}_linux_armv7.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_linux_armv7.deb) | Linux   | arm   |
+| [loraserver_{{< version >}}_linux_arm64.deb](https://artifacts.loraserver.io/downloads/loraserver/loraserver_{{< version >}}_linux_arm64.deb) | Linux   | arm64 |
 
 ## Debian / Ubuntu repository
 
 As all packages are signed using a PGP key, you first need to import this key:
 
-```bash
+{{<highlight bash>}}
 sudo apt-key adv --keyserver keyserver.ubuntu.com --recv-keys 1CE2AFD36DBCCA00
-```
+{{< /highlight >}}
 
-### Testing
+To add the LoRa Server repository to your system:
 
-The testing distribution contains the latest (test) releases.
-
-```bash
-sudo echo "deb https://artifacts.loraserver.io/packages/2.x/deb testing main" | sudo tee /etc/apt/sources.list.d/loraserver.list
+{{<highlight bash>}}
+sudo echo "deb https://artifacts.loraserver.io/packages/3.x/deb stable main" | sudo tee /etc/apt/sources.list.d/loraserver.list
 sudo apt-get update
-```
-
-### Stable
-
-The stable distribution contains releases that are considered stable.
-
-```bash
-sudo echo "deb https://artifacts.loraserver.io/packages/1.x/deb stable main" | sudo tee /etc/apt/sources.list.d/loraserver.list
-sudo apt-get update
-```
+{{< /highlight >}}
 
 ## Docker images
 

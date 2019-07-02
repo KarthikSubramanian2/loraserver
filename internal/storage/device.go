@@ -3,22 +3,34 @@ package storage
 import (
 	"time"
 
+	"github.com/gofrs/uuid"
 	"github.com/jmoiron/sqlx"
-	uuid "github.com/satori/go.uuid"
 	log "github.com/sirupsen/logrus"
 
 	"github.com/brocaar/lorawan"
 )
 
+// DeviceMode defines the mode in which the device operates.
+type DeviceMode string
+
+// Available device modes.
+const (
+	DeviceModeA DeviceMode = "A"
+	DeviceModeB DeviceMode = "B"
+	DeviceModeC DeviceMode = "C"
+)
+
 // Device defines a LoRaWAN device.
 type Device struct {
-	DevEUI           lorawan.EUI64 `db:"dev_eui"`
-	CreatedAt        time.Time     `db:"created_at"`
-	UpdatedAt        time.Time     `db:"updated_at"`
-	DeviceProfileID  uuid.UUID     `db:"device_profile_id"`
-	ServiceProfileID uuid.UUID     `db:"service_profile_id"`
-	RoutingProfileID uuid.UUID     `db:"routing_profile_id"`
-	SkipFCntCheck    bool          `db:"skip_fcnt_check"`
+	DevEUI            lorawan.EUI64 `db:"dev_eui"`
+	CreatedAt         time.Time     `db:"created_at"`
+	UpdatedAt         time.Time     `db:"updated_at"`
+	DeviceProfileID   uuid.UUID     `db:"device_profile_id"`
+	ServiceProfileID  uuid.UUID     `db:"service_profile_id"`
+	RoutingProfileID  uuid.UUID     `db:"routing_profile_id"`
+	SkipFCntCheck     bool          `db:"skip_fcnt_check"`
+	ReferenceAltitude float64       `db:"reference_altitude"`
+	Mode              DeviceMode    `db:"mode"`
 }
 
 // DeviceActivation defines the device-activation for a LoRaWAN device.
@@ -49,8 +61,10 @@ func CreateDevice(db sqlx.Execer, d *Device) error {
 			device_profile_id,
 			service_profile_id,
 			routing_profile_id,
-			skip_fcnt_check
-		) values ($1, $2, $3, $4, $5, $6, $7)`,
+			skip_fcnt_check,
+			reference_altitude,
+			mode
+		) values ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
 		d.DevEUI[:],
 		d.CreatedAt,
 		d.UpdatedAt,
@@ -58,6 +72,8 @@ func CreateDevice(db sqlx.Execer, d *Device) error {
 		d.ServiceProfileID,
 		d.RoutingProfileID,
 		d.SkipFCntCheck,
+		d.ReferenceAltitude,
+		d.Mode,
 	)
 	if err != nil {
 		return handlePSQLError(err, "insert error")
@@ -90,7 +106,9 @@ func UpdateDevice(db sqlx.Execer, d *Device) error {
 			device_profile_id = $3,
 			service_profile_id = $4,
 			routing_profile_id = $5,
-			skip_fcnt_check = $6
+			skip_fcnt_check = $6,
+			reference_altitude = $7,
+			mode = $8
 		where
 			dev_eui = $1`,
 		d.DevEUI[:],
@@ -99,6 +117,8 @@ func UpdateDevice(db sqlx.Execer, d *Device) error {
 		d.ServiceProfileID,
 		d.RoutingProfileID,
 		d.SkipFCntCheck,
+		d.ReferenceAltitude,
+		d.Mode,
 	)
 	if err != nil {
 		return handlePSQLError(err, "update error")
@@ -170,6 +190,24 @@ func CreateDeviceActivation(db sqlx.Queryer, da *DeviceActivation) error {
 		"dev_eui": da.DevEUI,
 	}).Info("device-activation created")
 
+	return nil
+}
+
+// DeleteDeviceActivationsForDevice removes the device-activation for the given
+// DevEUI.
+func DeleteDeviceActivationsForDevice(db sqlx.Execer, devEUI lorawan.EUI64) error {
+	_, err := db.Exec(`
+		delete
+		from
+			device_activation
+		where
+			dev_eui = $1
+	`, devEUI[:])
+	if err != nil {
+		return handlePSQLError(err, "delete error")
+	}
+
+	log.WithField("dev_eui", devEUI).Info("device-activations deleted")
 	return nil
 }
 

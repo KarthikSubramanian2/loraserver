@@ -9,12 +9,19 @@ import (
 	log "github.com/sirupsen/logrus"
 
 	"github.com/brocaar/loraserver/api/as"
-	gwPB "github.com/brocaar/loraserver/api/gw"
+	"github.com/brocaar/loraserver/api/common"
+	"github.com/brocaar/loraserver/api/geo"
+	"github.com/brocaar/loraserver/api/gw"
 	"github.com/brocaar/loraserver/api/nc"
+	"github.com/brocaar/loraserver/internal/backend/applicationserver"
+	"github.com/brocaar/loraserver/internal/backend/controller"
+	"github.com/brocaar/loraserver/internal/backend/geolocationserver"
+	"github.com/brocaar/loraserver/internal/band"
 	"github.com/brocaar/loraserver/internal/config"
 	datadown "github.com/brocaar/loraserver/internal/downlink/data"
 	"github.com/brocaar/loraserver/internal/downlink/data/classb"
 	"github.com/brocaar/loraserver/internal/framelog"
+	"github.com/brocaar/loraserver/internal/helpers"
 	"github.com/brocaar/loraserver/internal/maccommand"
 	"github.com/brocaar/loraserver/internal/models"
 	"github.com/brocaar/loraserver/internal/storage"
@@ -31,20 +38,35 @@ var tasks = []func(*dataContext) error{
 	logUplinkFrame,
 	getDeviceProfile,
 	getServiceProfile,
+	getApplicationServerClientForDataUp,
+	resolveDeviceLocation,
 	setADR,
 	setUplinkDataRate,
-	getApplicationServerClientForDataUp,
 	setBeaconLocked,
 	sendRXInfoToNetworkController,
 	handleFOptsMACCommands,
 	handleFRMPayloadMACCommands,
+	storeDeviceGatewayRXInfoSet,
 	appendMetaDataToUplinkHistory,
 	sendFRMPayloadToApplicationServer,
 	setLastRXInfoSet,
 	syncUplinkFCnt,
-	saveNodeSession,
+	saveDeviceSession,
 	handleUplinkACK,
 	handleDownlink,
+}
+
+var (
+	getDownlinkDataDelay time.Duration
+	disableMACCommands   bool
+)
+
+// Setup configures the package.
+func Setup(conf config.Config) error {
+	getDownlinkDataDelay = conf.NetworkServer.GetDownlinkDataDelay
+	disableMACCommands = conf.NetworkServer.NetworkSettings.DisableMACCommands
+
+	return nil
 }
 
 type dataContext struct {
@@ -55,6 +77,7 @@ type dataContext struct {
 	ServiceProfile          storage.ServiceProfile
 	ApplicationServerClient as.ApplicationServerServiceClient
 	MACCommandResponses     []storage.MACCommandBlock
+	MustSendDownlink        bool
 }
 
 // Handle handles an uplink data frame
@@ -82,19 +105,19 @@ func setContextFromDataPHYPayload(ctx *dataContext) error {
 }
 
 func getDeviceSessionForPHYPayload(ctx *dataContext) error {
-	txDR, err := config.C.NetworkServer.Band.Band.GetDataRateIndex(true, ctx.RXPacket.TXInfo.DataRate)
+	txDR, err := helpers.GetDataRateIndex(true, ctx.RXPacket.TXInfo, band.Band())
 	if err != nil {
 		return errors.Wrap(err, "get data-rate index error")
 	}
 
 	var txCh int
 	for _, defaultChannel := range []bool{true, false} {
-		i, err := config.C.NetworkServer.Band.Band.GetUplinkChannelIndex(ctx.RXPacket.TXInfo.Frequency, defaultChannel)
+		i, err := band.Band().GetUplinkChannelIndex(int(ctx.RXPacket.TXInfo.Frequency), defaultChannel)
 		if err != nil {
 			continue
 		}
 
-		c, err := config.C.NetworkServer.Band.Band.GetUplinkChannel(i)
+		c, err := band.Band().GetUplinkChannel(i)
 		if err != nil {
 			return errors.Wrap(err, "get channel error")
 		}
@@ -108,7 +131,7 @@ func getDeviceSessionForPHYPayload(ctx *dataContext) error {
 		}
 	}
 
-	ds, err := storage.GetDeviceSessionForPHYPayload(config.C.Redis.Pool, ctx.RXPacket.PHYPayload, txDR, txCh)
+	ds, err := storage.GetDeviceSessionForPHYPayload(storage.RedisPool(), ctx.RXPacket.PHYPayload, txDR, txCh)
 	if err != nil {
 		return errors.Wrap(err, "get device-session error")
 	}
@@ -123,7 +146,7 @@ func logUplinkFrame(ctx *dataContext) error {
 		return errors.Wrap(err, "create uplink frame-log error")
 	}
 
-	if err := framelog.LogUplinkFrameForDevEUI(ctx.DeviceSession.DevEUI, uplinkFrameSet); err != nil {
+	if err := framelog.LogUplinkFrameForDevEUI(storage.RedisPool(), ctx.DeviceSession.DevEUI, uplinkFrameSet); err != nil {
 		log.WithError(err).Error("log uplink frame for device error")
 	}
 
@@ -131,7 +154,7 @@ func logUplinkFrame(ctx *dataContext) error {
 }
 
 func getDeviceProfile(ctx *dataContext) error {
-	dp, err := storage.GetAndCacheDeviceProfile(config.C.PostgreSQL.DB, config.C.Redis.Pool, ctx.DeviceSession.DeviceProfileID)
+	dp, err := storage.GetAndCacheDeviceProfile(storage.DB(), storage.RedisPool(), ctx.DeviceSession.DeviceProfileID)
 	if err != nil {
 		return errors.Wrap(err, "get device-profile error")
 	}
@@ -141,7 +164,7 @@ func getDeviceProfile(ctx *dataContext) error {
 }
 
 func getServiceProfile(ctx *dataContext) error {
-	sp, err := storage.GetAndCacheServiceProfile(config.C.PostgreSQL.DB, config.C.Redis.Pool, ctx.DeviceSession.ServiceProfileID)
+	sp, err := storage.GetAndCacheServiceProfile(storage.DB(), storage.RedisPool(), ctx.DeviceSession.ServiceProfileID)
 	if err != nil {
 		return errors.Wrap(err, "get service-profile error")
 	}
@@ -156,7 +179,7 @@ func setADR(ctx *dataContext) error {
 }
 
 func setUplinkDataRate(ctx *dataContext) error {
-	currentDR, err := config.C.NetworkServer.Band.Band.GetDataRateIndex(true, ctx.RXPacket.TXInfo.DataRate)
+	currentDR, err := helpers.GetDataRateIndex(true, ctx.RXPacket.TXInfo, band.Band())
 	if err != nil {
 		return errors.Wrap(err, "get data-rate error")
 	}
@@ -183,8 +206,8 @@ func appendMetaDataToUplinkHistory(ctx *dataContext) error {
 	for i, rxInfo := range ctx.RXPacket.RXInfoSet {
 		// as the default value is 0 and the LoRaSNR can be negative, we always
 		// set it when i == 0 (the first item from the slice)
-		if i == 0 || rxInfo.LoRaSNR > maxSNR {
-			maxSNR = rxInfo.LoRaSNR
+		if i == 0 || rxInfo.LoraSnr > maxSNR {
+			maxSNR = rxInfo.LoraSnr
 		}
 	}
 
@@ -198,18 +221,112 @@ func appendMetaDataToUplinkHistory(ctx *dataContext) error {
 	return nil
 }
 
+func storeDeviceGatewayRXInfoSet(ctx *dataContext) error {
+	dr, err := helpers.GetDataRateIndex(true, ctx.RXPacket.TXInfo, band.Band())
+	if err != nil {
+		errors.Wrap(err, "get data-rate error")
+	}
+
+	rxInfoSet := storage.DeviceGatewayRXInfoSet{
+		DevEUI: ctx.DeviceSession.DevEUI,
+		DR:     dr,
+	}
+
+	for i := range ctx.RXPacket.RXInfoSet {
+		rxInfoSet.Items = append(rxInfoSet.Items, storage.DeviceGatewayRXInfo{
+			GatewayID: helpers.GetGatewayID(ctx.RXPacket.RXInfoSet[i]),
+			RSSI:      int(ctx.RXPacket.RXInfoSet[i].Rssi),
+			LoRaSNR:   ctx.RXPacket.RXInfoSet[i].LoraSnr,
+		})
+	}
+
+	err = storage.SaveDeviceGatewayRXInfoSet(storage.RedisPool(), rxInfoSet)
+	if err != nil {
+		return errors.Wrap(err, "save device gateway rx-info set error")
+	}
+
+	return nil
+}
+
 func getApplicationServerClientForDataUp(ctx *dataContext) error {
-	rp, err := storage.GetRoutingProfile(config.C.PostgreSQL.DB, ctx.DeviceSession.RoutingProfileID)
+	rp, err := storage.GetRoutingProfile(storage.DB(), ctx.DeviceSession.RoutingProfileID)
 	if err != nil {
 		return errors.Wrap(err, "get routing-profile error")
 	}
 
-	asClient, err := config.C.ApplicationServer.Pool.Get(rp.ASID, []byte(rp.CACert), []byte(rp.TLSCert), []byte(rp.TLSKey))
+	asClient, err := applicationserver.Pool().Get(rp.ASID, []byte(rp.CACert), []byte(rp.TLSCert), []byte(rp.TLSKey))
 	if err != nil {
 		return errors.Wrap(err, "get application-server client error")
 	}
 
 	ctx.ApplicationServerClient = asClient
+
+	return nil
+}
+
+func resolveDeviceLocation(ctx *dataContext) error {
+	if !ctx.ServiceProfile.NwkGeoLoc {
+		log.WithFields(log.Fields{
+			"dev_eui": ctx.DeviceSession.DevEUI,
+		}).Debug("skipping geolocation, it is disabled by the service-profile")
+		return nil
+	}
+
+	if geolocationserver.Client() == nil {
+		log.WithFields(log.Fields{
+			"dev_eui": ctx.DeviceSession.DevEUI,
+		}).Debug("skipping geolocation, no client configured")
+		return nil
+	}
+
+	var rxInfoWithFineTimestamp []*gw.UplinkRXInfo
+	for i := range ctx.RXPacket.RXInfoSet {
+		if ctx.RXPacket.RXInfoSet[i].FineTimestampType == gw.FineTimestampType_PLAIN {
+			rxInfoWithFineTimestamp = append(rxInfoWithFineTimestamp, ctx.RXPacket.RXInfoSet[i])
+		}
+	}
+
+	if len(rxInfoWithFineTimestamp) < 3 {
+		log.WithFields(log.Fields{
+			"dev_eui": ctx.DeviceSession.DevEUI,
+		}).Debug("skipping geolocation, not enough gateway meta-data")
+		return nil
+	}
+
+	// perform the actual geolocation in a separate goroutine
+	go func(devEUI lorawan.EUI64, referenceAlt float64, geoClient geo.GeolocationServerServiceClient, asClient as.ApplicationServerServiceClient, rxInfo []*gw.UplinkRXInfo) {
+		resp, err := geoClient.ResolveTDOA(context.Background(), &geo.ResolveTDOARequest{
+			DevEui: devEUI[:],
+			FrameRxInfo: &geo.FrameRXInfo{
+				RxInfo: rxInfo,
+			},
+			DeviceReferenceAltitude: referenceAlt,
+		})
+		if err != nil {
+			log.WithFields(log.Fields{
+				"dev_eui": devEUI,
+			}).WithError(err).Error("resolve tdoa error")
+			return
+		}
+
+		if resp.Result == nil || resp.Result.Location == nil {
+			log.WithFields(log.Fields{
+				"dev_eui": devEUI,
+			}).Error("geolocation-server result or result.location must not be nil")
+			return
+		}
+
+		_, err = asClient.SetDeviceLocation(context.Background(), &as.SetDeviceLocationRequest{
+			DevEui:   devEUI[:],
+			Location: resp.Result.Location,
+		})
+		if err != nil {
+			log.WithFields(log.Fields{
+				"dev_eui": devEUI,
+			}).WithError(err).Error("set device-location error")
+		}
+
+	}(ctx.DeviceSession.DevEUI, ctx.DeviceSession.ReferenceAltitude, geolocationserver.Client(), ctx.ApplicationServerClient, rxInfoWithFineTimestamp)
 
 	return nil
 }
@@ -246,20 +363,39 @@ func setBeaconLocked(ctx *dataContext) error {
 	}
 
 	ctx.DeviceSession.BeaconLocked = ctx.MACPayload.FHDR.FCtrl.ClassB
+
 	if ctx.DeviceSession.BeaconLocked {
-		if err := classb.ScheduleDeviceQueueToPingSlotsForDevEUI(config.C.PostgreSQL.DB, ctx.DeviceProfile, ctx.DeviceSession); err != nil {
+		d, err := storage.GetDevice(storage.DB(), ctx.DeviceSession.DevEUI)
+		if err != nil {
+			return errors.Wrap(err, "get device")
+		}
+		d.Mode = storage.DeviceModeB
+		if err := storage.UpdateDevice(storage.DB(), &d); err != nil {
+			return errors.Wrap(err, "update device error")
+		}
+
+		if err := classb.ScheduleDeviceQueueToPingSlotsForDevEUI(storage.DB(), ctx.DeviceProfile, ctx.DeviceSession); err != nil {
 			return errors.Wrap(err, "schedule device-queue to ping-slots error")
 		}
 
 		log.WithFields(log.Fields{
 			"dev_eui": ctx.DeviceSession.DevEUI,
-		}).Info("class-b beacon locked")
-	}
+			"mode":    storage.DeviceModeB,
+		}).Info("device changed mode")
+	} else {
+		d, err := storage.GetDevice(storage.DB(), ctx.DeviceSession.DevEUI)
+		if err != nil {
+			return errors.Wrap(err, "get device")
+		}
+		d.Mode = storage.DeviceModeA
+		if err := storage.UpdateDevice(storage.DB(), &d); err != nil {
+			return errors.Wrap(err, "update device error")
+		}
 
-	if !ctx.DeviceSession.BeaconLocked {
 		log.WithFields(log.Fields{
 			"dev_eui": ctx.DeviceSession.DevEUI,
-		}).Info("class-b beacon lost")
+			"mode":    storage.DeviceModeA,
+		}).Info("device changed mode")
 	}
 
 	return nil
@@ -275,44 +411,55 @@ func sendRXInfoToNetworkController(ctx *dataContext) error {
 }
 
 func handleFOptsMACCommands(ctx *dataContext) error {
-	if config.C.NetworkServer.NetworkSettings.DisableMACCommands {
+	if len(ctx.MACPayload.FHDR.FOpts) == 0 {
 		return nil
 	}
 
-	if len(ctx.MACPayload.FHDR.FOpts) > 0 {
-		blocks, err := handleUplinkMACCommands(&ctx.DeviceSession, ctx.DeviceProfile, ctx.ServiceProfile, ctx.ApplicationServerClient, ctx.MACPayload.FHDR.FOpts, ctx.RXPacket)
-		if err != nil {
-			log.WithFields(log.Fields{
-				"dev_eui": ctx.DeviceSession.DevEUI,
-				"fopts":   ctx.MACPayload.FHDR.FOpts,
-			}).Errorf("handle FOpts mac commands error: %s", err)
-		} else {
-			ctx.MACCommandResponses = append(ctx.MACCommandResponses, blocks...)
-		}
+	blocks, mustRespondWithDownlink, err := handleUplinkMACCommands(
+		&ctx.DeviceSession,
+		ctx.DeviceProfile,
+		ctx.ServiceProfile,
+		ctx.ApplicationServerClient,
+		ctx.MACPayload.FHDR.FOpts,
+		ctx.RXPacket,
+	)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"dev_eui": ctx.DeviceSession.DevEUI,
+			"fopts":   ctx.MACPayload.FHDR.FOpts,
+		}).Errorf("handle FOpts mac commands error: %s", err)
+		return nil
+	}
+
+	ctx.MACCommandResponses = append(ctx.MACCommandResponses, blocks...)
+	if !ctx.MustSendDownlink {
+		ctx.MustSendDownlink = mustRespondWithDownlink
 	}
 
 	return nil
 }
 
 func handleFRMPayloadMACCommands(ctx *dataContext) error {
-	if config.C.NetworkServer.NetworkSettings.DisableMACCommands {
+	if ctx.MACPayload.FPort == nil || *ctx.MACPayload.FPort != 0 {
 		return nil
 	}
 
-	if ctx.MACPayload.FPort != nil && *ctx.MACPayload.FPort == 0 {
-		if len(ctx.MACPayload.FRMPayload) == 0 {
-			return errors.New("expected mac commands, but FRMPayload is empty (FPort=0)")
-		}
+	if len(ctx.MACPayload.FRMPayload) == 0 {
+		return errors.New("expected mac commands, but FRMPayload is empty (FPort=0)")
+	}
 
-		blocks, err := handleUplinkMACCommands(&ctx.DeviceSession, ctx.DeviceProfile, ctx.ServiceProfile, ctx.ApplicationServerClient, ctx.MACPayload.FRMPayload, ctx.RXPacket)
-		if err != nil {
-			log.WithFields(log.Fields{
-				"dev_eui":  ctx.DeviceSession.DevEUI,
-				"commands": ctx.MACPayload.FRMPayload,
-			}).Errorf("handle FRMPayload mac commands error: %s", err)
-		} else {
-			ctx.MACCommandResponses = append(ctx.MACCommandResponses, blocks...)
-		}
+	blocks, mustRespondWithDownlink, err := handleUplinkMACCommands(&ctx.DeviceSession, ctx.DeviceProfile, ctx.ServiceProfile, ctx.ApplicationServerClient, ctx.MACPayload.FRMPayload, ctx.RXPacket)
+	if err != nil {
+		log.WithFields(log.Fields{
+			"dev_eui":  ctx.DeviceSession.DevEUI,
+			"commands": ctx.MACPayload.FRMPayload,
+		}).Errorf("handle FRMPayload mac commands error: %s", err)
+		return nil
+	}
+
+	ctx.MACCommandResponses = append(ctx.MACCommandResponses, blocks...)
+	if !ctx.MustSendDownlink {
+		ctx.MustSendDownlink = mustRespondWithDownlink
 	}
 
 	return nil
@@ -328,45 +475,29 @@ func sendFRMPayloadToApplicationServer(ctx *dataContext) error {
 		JoinEui: ctx.DeviceSession.JoinEUI[:],
 		FCnt:    ctx.MACPayload.FHDR.FCnt,
 		Adr:     ctx.MACPayload.FHDR.FCtrl.ADR,
-		TxInfo:  ctx.RXPacket.GetGWUplinkTXInfo(),
+		TxInfo:  ctx.RXPacket.TXInfo,
 	}
 
-	dr, err := config.C.NetworkServer.Band.Band.GetDataRateIndex(true, ctx.RXPacket.TXInfo.DataRate)
+	dr, err := helpers.GetDataRateIndex(true, ctx.RXPacket.TXInfo, band.Band())
 	if err != nil {
 		errors.Wrap(err, "get data-rate error")
 	}
 	publishDataUpReq.Dr = uint32(dr)
 
+	if ctx.DeviceSession.AppSKeyEvelope != nil {
+		publishDataUpReq.DeviceActivationContext = &as.DeviceActivationContext{
+			DevAddr: ctx.DeviceSession.DevAddr[:],
+			AppSKey: &common.KeyEnvelope{
+				KekLabel: ctx.DeviceSession.AppSKeyEvelope.KEKLabel,
+				AesKey:   ctx.DeviceSession.AppSKeyEvelope.AESKey,
+			},
+		}
+
+		ctx.DeviceSession.AppSKeyEvelope = nil
+	}
+
 	if ctx.ServiceProfile.AddGWMetadata {
-		var macs []lorawan.EUI64
-		publishDataUpReq.RxInfo = ctx.RXPacket.GetGWUplinkRXInfoSet()
-
-		// get gateway info
-		for i := range publishDataUpReq.RxInfo {
-			var mac lorawan.EUI64
-			copy(mac[:], publishDataUpReq.RxInfo[i].GatewayId)
-			macs = append(macs, mac)
-		}
-
-		gws, err := storage.GetGatewaysForMACs(config.C.PostgreSQL.DB, macs)
-		if err != nil {
-			fmt.Println(err)
-			log.WithField("macs", macs).Warningf("get gateways for macs error: %s", err)
-			gws = make(map[lorawan.EUI64]storage.Gateway)
-		}
-
-		for i := range publishDataUpReq.RxInfo {
-			var mac lorawan.EUI64
-			copy(mac[:], publishDataUpReq.RxInfo[i].GatewayId)
-
-			if gw, ok := gws[mac]; ok {
-				publishDataUpReq.RxInfo[i].Location = &gwPB.Location{
-					Latitude:  gw.Location.Latitude,
-					Longitude: gw.Location.Longitude,
-					Altitude:  gw.Altitude,
-				}
-			}
-		}
+		publishDataUpReq.RxInfo = ctx.RXPacket.RXInfoSet
 	}
 
 	if ctx.MACPayload.FPort != nil {
@@ -397,8 +528,9 @@ func sendFRMPayloadToApplicationServer(ctx *dataContext) error {
 
 func setLastRXInfoSet(ctx *dataContext) error {
 	if len(ctx.RXPacket.RXInfoSet) != 0 {
+		gatewayID := helpers.GetGatewayID(ctx.RXPacket.RXInfoSet[0])
 		ctx.DeviceSession.UplinkGatewayHistory = map[lorawan.EUI64]storage.UplinkGatewayHistory{
-			ctx.RXPacket.RXInfoSet[0].MAC: storage.UplinkGatewayHistory{},
+			gatewayID: storage.UplinkGatewayHistory{},
 		}
 	}
 	return nil
@@ -410,9 +542,9 @@ func syncUplinkFCnt(ctx *dataContext) error {
 	return nil
 }
 
-func saveNodeSession(ctx *dataContext) error {
+func saveDeviceSession(ctx *dataContext) error {
 	// save node-session
-	return storage.SaveDeviceSession(config.C.Redis.Pool, ctx.DeviceSession)
+	return storage.SaveDeviceSession(storage.RedisPool(), ctx.DeviceSession)
 }
 
 func handleUplinkACK(ctx *dataContext) error {
@@ -420,7 +552,7 @@ func handleUplinkACK(ctx *dataContext) error {
 		return nil
 	}
 
-	qi, err := storage.GetPendingDeviceQueueItemForDevEUI(config.C.PostgreSQL.DB, ctx.DeviceSession.DevEUI)
+	qi, err := storage.GetPendingDeviceQueueItemForDevEUI(storage.DB(), ctx.DeviceSession.DevEUI)
 	if err != nil {
 		log.WithFields(log.Fields{
 			"dev_eui": ctx.DeviceSession.DevEUI,
@@ -436,7 +568,7 @@ func handleUplinkACK(ctx *dataContext) error {
 		return nil
 	}
 
-	if err := storage.DeleteDeviceQueueItem(config.C.PostgreSQL.DB, qi.ID); err != nil {
+	if err := storage.DeleteDeviceQueueItem(storage.DB(), qi.ID); err != nil {
 		return errors.Wrap(err, "delete device-queue item error")
 	}
 
@@ -454,13 +586,13 @@ func handleUplinkACK(ctx *dataContext) error {
 
 func handleDownlink(ctx *dataContext) error {
 	// handle downlink (ACK)
-	time.Sleep(config.C.NetworkServer.GetDownlinkDataDelay)
+	time.Sleep(getDownlinkDataDelay)
 	if err := datadown.HandleResponse(
 		ctx.RXPacket,
 		ctx.ServiceProfile,
 		ctx.DeviceSession,
 		ctx.MACPayload.FHDR.FCtrl.ADR,
-		ctx.MACPayload.FHDR.FCtrl.ADRACKReq,
+		ctx.MACPayload.FHDR.FCtrl.ADRACKReq || ctx.MustSendDownlink,
 		ctx.RXPacket.PHYPayload.MHDR.MType == lorawan.ConfirmedDataUp,
 		ctx.MACCommandResponses,
 	); err != nil {
@@ -474,11 +606,11 @@ func handleDownlink(ctx *dataContext) error {
 func sendRXInfoPayload(ds storage.DeviceSession, rxPacket models.RXPacket) error {
 	rxInfoReq := nc.HandleUplinkMetaDataRequest{
 		DevEui: ds.DevEUI[:],
-		TxInfo: rxPacket.GetGWUplinkTXInfo(),
-		RxInfo: rxPacket.GetGWUplinkRXInfoSet(),
+		TxInfo: rxPacket.TXInfo,
+		RxInfo: rxPacket.RXInfoSet,
 	}
 
-	_, err := config.C.NetworkController.Client.HandleUplinkMetaData(context.Background(), &rxInfoReq)
+	_, err := controller.Client().HandleUplinkMetaData(context.Background(), &rxInfoReq)
 	if err != nil {
 		return fmt.Errorf("publish rxinfo to network-controller error: %s", err)
 	}
@@ -488,19 +620,23 @@ func sendRXInfoPayload(ds storage.DeviceSession, rxPacket models.RXPacket) error
 	return nil
 }
 
-func handleUplinkMACCommands(ds *storage.DeviceSession, dp storage.DeviceProfile, sp storage.ServiceProfile, asClient as.ApplicationServerServiceClient, commands []lorawan.Payload, rxPacket models.RXPacket) ([]storage.MACCommandBlock, error) {
+// handleUplinkMACCommands handles the given uplink mac-commands.
+// It returns the mac-commands to respond with + a bool indicating the a downlink MUST be send,
+// this to make sure that a response has been received by the NS.
+func handleUplinkMACCommands(ds *storage.DeviceSession, dp storage.DeviceProfile, sp storage.ServiceProfile, asClient as.ApplicationServerServiceClient, commands []lorawan.Payload, rxPacket models.RXPacket) ([]storage.MACCommandBlock, bool, error) {
 	var cids []lorawan.CID
 	var out []storage.MACCommandBlock
+	var mustRespondWithDownlink bool
 	blocks := make(map[lorawan.CID]storage.MACCommandBlock)
 
 	// group mac-commands by CID
 	for _, pl := range commands {
 		cmd, ok := pl.(*lorawan.MACCommand)
 		if !ok {
-			return nil, fmt.Errorf("expected *lorawan.MACCommand, got %T", pl)
+			return nil, false, fmt.Errorf("expected *lorawan.MACCommand, got %T", pl)
 		}
 		if cmd == nil {
-			return nil, errors.New("*lorawan.MACCommand must not be nil")
+			return nil, false, errors.New("*lorawan.MACCommand must not be nil")
 		}
 
 		block, ok := blocks[cmd.CID]
@@ -515,6 +651,16 @@ func handleUplinkMACCommands(ds *storage.DeviceSession, dp storage.DeviceProfile
 	}
 
 	for _, cid := range cids {
+		switch cid {
+		case lorawan.RXTimingSetupAns:
+			// From the specs:
+			// The RXTimingSetupAns command should be added in the FOpt field of all uplinks until a
+			// class A downlink is received by the end-device.
+			mustRespondWithDownlink = true
+		default:
+			// nothing to do
+		}
+
 		block := blocks[cid]
 
 		logFields := log.Fields{
@@ -522,40 +668,45 @@ func handleUplinkMACCommands(ds *storage.DeviceSession, dp storage.DeviceProfile
 			"cid":     block.CID,
 		}
 
-		// read pending mac-command block for CID. e.g. on case of an ack, the
-		// pending mac-command block contains the request.
-		// we need this pending mac-command block to find out if the command
-		// was scheduled through the API (external).
-		pending, err := storage.GetPendingMACCommand(config.C.Redis.Pool, ds.DevEUI, block.CID)
-		if err != nil {
-			log.WithFields(logFields).Errorf("read pending mac-command error: %s", err)
-			continue
-		}
 		var external bool
-		if pending != nil {
-			external = pending.External
-		}
 
-		// in case the node is requesting a mac-command, there is nothing pending
-		if pending != nil {
-			if err = storage.DeletePendingMACCommand(config.C.Redis.Pool, ds.DevEUI, block.CID); err != nil {
-				log.WithFields(logFields).Errorf("delete pending mac-command error: %s", err)
-			}
-		}
-
-		// CID >= 0x80 are proprietary mac-commands and are not handled by LoRa Server
-		if block.CID < 0x80 {
-			responseBlocks, err := maccommand.Handle(ds, dp, sp, asClient, block, pending, rxPacket)
+		if !disableMACCommands {
+			// read pending mac-command block for CID. e.g. on case of an ack, the
+			// pending mac-command block contains the request.
+			// we need this pending mac-command block to find out if the command
+			// was scheduled through the API (external).
+			pending, err := storage.GetPendingMACCommand(storage.RedisPool(), ds.DevEUI, block.CID)
 			if err != nil {
-				log.WithFields(logFields).Errorf("handle mac-command block error: %s", err)
-			} else {
-				out = append(out, responseBlocks...)
+				log.WithFields(logFields).Errorf("read pending mac-command error: %s", err)
+				continue
+			}
+			if pending != nil {
+				external = pending.External
+			}
+
+			// in case the node is requesting a mac-command, there is nothing pending
+			if pending != nil {
+				if err = storage.DeletePendingMACCommand(storage.RedisPool(), ds.DevEUI, block.CID); err != nil {
+					log.WithFields(logFields).Errorf("delete pending mac-command error: %s", err)
+				}
+			}
+
+			// CID >= 0x80 are proprietary mac-commands and are not handled by LoRa Server
+			if block.CID < 0x80 {
+				responseBlocks, err := maccommand.Handle(ds, dp, sp, asClient, block, pending, rxPacket)
+				if err != nil {
+					log.WithFields(logFields).Errorf("handle mac-command block error: %s", err)
+				} else {
+					out = append(out, responseBlocks...)
+				}
 			}
 		}
 
-		// report to external controller in case of proprietary mac-commands or
-		// in case when the request has been scheduled through the API.
-		if block.CID >= 0x80 || external {
+		// Report to external controller:
+		//  * in case of proprietary mac-commands
+		//  * in case when the request has been scheduled through the API
+		//  * in case mac-commands are disabled in the LoRa Server configuration
+		if disableMACCommands || block.CID >= 0x80 || external {
 			var data [][]byte
 			for _, cmd := range block.MACCommands {
 				b, err := cmd.MarshalBinary()
@@ -565,7 +716,7 @@ func handleUplinkMACCommands(ds *storage.DeviceSession, dp storage.DeviceProfile
 				}
 				data = append(data, b)
 			}
-			_, err = config.C.NetworkController.Client.HandleUplinkMACCommand(context.Background(), &nc.HandleUplinkMACCommandRequest{
+			_, err := controller.Client().HandleUplinkMACCommand(context.Background(), &nc.HandleUplinkMACCommandRequest{
 				DevEui:   ds.DevEUI[:],
 				Cid:      uint32(block.CID),
 				Commands: data,
@@ -578,5 +729,5 @@ func handleUplinkMACCommands(ds *storage.DeviceSession, dp storage.DeviceProfile
 		}
 	}
 
-	return out, nil
+	return out, mustRespondWithDownlink, nil
 }

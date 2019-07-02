@@ -4,32 +4,31 @@ import (
 	"context"
 	"time"
 
-	"github.com/brocaar/loraserver/internal/gps"
-	uuid "github.com/satori/go.uuid"
-
-	"github.com/brocaar/loraserver/api/as"
-	"github.com/brocaar/loraserver/internal/config"
-
+	"github.com/gofrs/uuid"
 	"github.com/jmoiron/sqlx"
 	"github.com/pkg/errors"
 	log "github.com/sirupsen/logrus"
 
+	"github.com/brocaar/loraserver/api/as"
+	"github.com/brocaar/loraserver/internal/backend/applicationserver"
+	"github.com/brocaar/loraserver/internal/gps"
 	"github.com/brocaar/lorawan"
 )
 
 // DeviceQueueItem represents an item in the device queue (downlink).
 type DeviceQueueItem struct {
-	ID                      int64          `db:"id"`
-	CreatedAt               time.Time      `db:"created_at"`
-	UpdatedAt               time.Time      `db:"updated_at"`
-	DevEUI                  lorawan.EUI64  `db:"dev_eui"`
-	FRMPayload              []byte         `db:"frm_payload"`
-	FCnt                    uint32         `db:"f_cnt"`
-	FPort                   uint8          `db:"f_port"`
-	Confirmed               bool           `db:"confirmed"`
-	IsPending               bool           `db:"is_pending"`
-	EmitAtTimeSinceGPSEpoch *time.Duration `db:"emit_at_time_since_gps_epoch"`
-	TimeoutAfter            *time.Time     `db:"timeout_after"`
+	ID                      int64           `db:"id"`
+	CreatedAt               time.Time       `db:"created_at"`
+	UpdatedAt               time.Time       `db:"updated_at"`
+	DevAddr                 lorawan.DevAddr `db:"dev_addr"`
+	DevEUI                  lorawan.EUI64   `db:"dev_eui"`
+	FRMPayload              []byte          `db:"frm_payload"`
+	FCnt                    uint32          `db:"f_cnt"`
+	FPort                   uint8           `db:"f_port"`
+	Confirmed               bool            `db:"confirmed"`
+	IsPending               bool            `db:"is_pending"`
+	EmitAtTimeSinceGPSEpoch *time.Duration  `db:"emit_at_time_since_gps_epoch"`
+	TimeoutAfter            *time.Time      `db:"timeout_after"`
 }
 
 // Validate validates the DeviceQueueItem.
@@ -54,6 +53,7 @@ func CreateDeviceQueueItem(db sqlx.Queryer, qi *DeviceQueueItem) error {
         insert into device_queue (
             created_at,
             updated_at,
+			dev_addr,
             dev_eui,
             frm_payload,
             f_cnt,
@@ -62,10 +62,11 @@ func CreateDeviceQueueItem(db sqlx.Queryer, qi *DeviceQueueItem) error {
             emit_at_time_since_gps_epoch,
             is_pending,
             timeout_after
-        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+        ) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         returning id`,
 		qi.CreatedAt,
 		qi.UpdatedAt,
+		qi.DevAddr[:],
 		qi.DevEUI[:],
 		qi.FRMPayload,
 		qi.FCnt,
@@ -112,7 +113,8 @@ func UpdateDeviceQueueItem(db sqlx.Execer, qi *DeviceQueueItem) error {
             confirmed = $7,
             emit_at_time_since_gps_epoch = $8,
             is_pending = $9,
-            timeout_after = $10
+            timeout_after = $10,
+			dev_addr = $11
         where
             id = $1`,
 		qi.ID,
@@ -125,6 +127,7 @@ func UpdateDeviceQueueItem(db sqlx.Execer, qi *DeviceQueueItem) error {
 		qi.EmitAtTimeSinceGPSEpoch,
 		qi.IsPending,
 		qi.TimeoutAfter,
+		qi.DevAddr[:],
 	)
 	if err != nil {
 		return handlePSQLError(err, "update error")
@@ -281,7 +284,7 @@ func GetNextDeviceQueueItemForDevEUIMaxPayloadSizeAndFCnt(db sqlx.Ext, devEUI lo
 			if err != nil {
 				return DeviceQueueItem{}, errors.Wrap(err, "get routing-profile error")
 			}
-			asClient, err := config.C.ApplicationServer.Pool.Get(rp.ASID, []byte(rp.CACert), []byte(rp.TLSCert), []byte(rp.TLSKey))
+			asClient, err := applicationserver.Pool().Get(rp.ASID, []byte(rp.CACert), []byte(rp.TLSCert), []byte(rp.TLSKey))
 			if err != nil {
 				return DeviceQueueItem{}, errors.Wrap(err, "get application-server client error")
 			}
@@ -355,7 +358,7 @@ func GetNextDeviceQueueItemForDevEUIMaxPayloadSizeAndFCnt(db sqlx.Ext, devEUI lo
 // The device records will be locked for update so that multiple instances can
 // run this query in parallel without the risk of duplicate scheduling.
 func GetDevicesWithClassBOrClassCDeviceQueueItems(db sqlx.Ext, count int) ([]Device, error) {
-	gpsEpochScheduleTime := gps.Time(time.Now().Add(config.ClassCScheduleInterval * 2)).TimeSinceGPSEpoch()
+	gpsEpochScheduleTime := gps.Time(time.Now().Add(schedulerInterval * 2)).TimeSinceGPSEpoch()
 
 	var devices []Device
 	err := sqlx.Select(db, &devices, `
@@ -363,12 +366,8 @@ func GetDevicesWithClassBOrClassCDeviceQueueItems(db sqlx.Ext, count int) ([]Dev
             d.*
         from
             device d
-        inner join device_profile dp
-            on dp.device_profile_id = d.device_profile_id
-        where (
-            	dp.supports_class_c = true
-            	or dp.supports_class_b = true
-            )
+        where
+			d.mode in ('B', 'C')
             -- we want devices with queue items
             and exists (
                 select
@@ -378,9 +377,9 @@ func GetDevicesWithClassBOrClassCDeviceQueueItems(db sqlx.Ext, count int) ([]Dev
                 where
                     dq.dev_eui = d.dev_eui
                     and (
-                    	dp.supports_class_c = true
+						d.mode = 'C'
                     	or (
-                    		dp.supports_class_b = true
+							d.mode = 'B'
                     		and dq.emit_at_time_since_gps_epoch <= $2
                     	)
                     )
@@ -395,7 +394,7 @@ func GetDevicesWithClassBOrClassCDeviceQueueItems(db sqlx.Ext, count int) ([]Dev
                 where
                     dq.dev_eui = d.dev_eui
                     and is_pending = true
-                    and dq.timeout_after > now()
+                    and dq.timeout_after > $3 
             )
         order by
             d.dev_eui
@@ -403,6 +402,7 @@ func GetDevicesWithClassBOrClassCDeviceQueueItems(db sqlx.Ext, count int) ([]Dev
         for update of d skip locked`,
 		count,
 		gpsEpochScheduleTime,
+		time.Now(),
 	)
 	if err != nil {
 		return nil, handlePSQLError(err, "select error")

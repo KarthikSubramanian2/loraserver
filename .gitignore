@@ -7,17 +7,20 @@ Vagrantfile
 # logs
 *.log
 
+# test coverage
+coverage.out
+
 # configuration
-*.toml
+/*.toml
 
 # dependencies
-vendor/
+/vendor/
 
 # certs
-certs/
+/certs/
 
 # builds
-dist/
-build/
-internal/migrations/
-docs/public/
+/dist/
+/build/
+/internal/migrations/migrations_gen.go
+/docs/public/

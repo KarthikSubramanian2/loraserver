@@ -2,6 +2,8 @@ syntax  = "proto3";
 
 package storage;
 
+import "api/common/common.proto";
+
 message DeviceSessionPBChannel {
     // Frequency (Hz).
     uint32 frequency = 1;
@@ -58,6 +60,9 @@ message DeviceSessionPB {
     // NwkSEncKey.
     bytes nwk_s_enc_key = 9;
 
+    // AppSKeyEnvelope contains the (encrypted) AppSKey key-envelope.
+    common.KeyEnvelope app_s_key_envelope = 45;
+
     // Uplink frame-counter.
     uint32 f_cnt_up = 10;
 
@@ -102,10 +107,6 @@ message DeviceSessionPB {
 	// MaxSupportedTXPowerIndex defines the maximum supported tx-power index
     // by the node, or 0 when not set.
     uint32 max_supported_tx_power_index = 21;
-
-	// MaxSupportedDR defines the maximum supported DR index by the node,
-    // or 0 when not set.
-    uint32 max_supported_dr = 22;
 
 	// NbTrans defines the number of transmissions for each unconfirmed uplink
 	// frame. In case of 0, the default value is used.
@@ -172,4 +173,30 @@ message DeviceSessionPB {
     // Pending rejoin device-session contains a device-session which has not
     // yet been activated by the device (by sending a first uplink).
     bytes pending_rejoin_device_session = 43;
+
+    // Device reference altitude for geolocation.
+    double reference_altitude = 46;
+}
+
+
+message DeviceGatewayRXInfoSetPB {
+    // Device EUI.
+    bytes dev_eui = 1;
+
+    // Data-rate.
+    uint32 dr = 2;
+
+    // Items contains set items.
+    repeated DeviceGatewayRXInfoPB items = 3;
+}
+
+message DeviceGatewayRXInfoPB {
+    // Gateway ID.
+    bytes gateway_id = 1;
+
+    // RSSI.
+    int32 rssi = 2;
+
+    // LoRa SNR.
+    double lora_snr = 3;
 }
